@@ -56,5 +56,11 @@ service cloud.firestore {
     match /print_queue/{printId} {
       allow read, write: if true;
     }
+
+    // Colección Solicitudes de Cambio de Mesa
+    match /solicitudes_cambio/{reqId} {
+      allow read, write: if true;
+    }
   }
 }
+

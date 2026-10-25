@@ -1126,20 +1126,43 @@ export default function App() {
     }
     try {
       const cleanPhone = (celular || localStorage.getItem('churo_celular') || '').replace(/\D/g, '');
-      await addDoc(collection(db, 'solicitudes_cambio'), {
+      const docRef = await addDoc(collection(db, 'solicitudes_cambio'), {
         mesa_origen: Number(mesaNum),
         mesa_destino: null,
         celular: cleanPhone || null,
-        motivo: motivo || 'Solicitud de cambio de mesa',
+        motivo: motivo || 'Mesa más grande',
         estado: 'pendiente',
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        cliente_nombre: `Cliente Mesa ${mesaNum}`
       });
-      showToast("Solicitud enviada al mozo. ¡Un mozo se acercará pronto! 🛎️");
+      console.log('Solicitud creada:', docRef.id);
+      showToast("Solicitud enviada");
     } catch (e) {
       console.error("Error al enviar solicitud de cambio de mesa:", e);
       showToast("Error al enviar la solicitud. Intenta de nuevo.", "error");
     }
   };
+
+  // Simular solicitud de cambio de mesa en admin
+  const handleSimulateRequest = async () => {
+    try {
+      const docRef = await addDoc(collection(db, 'solicitudes_cambio'), {
+        mesa_origen: 5,
+        mesa_destino: null,
+        celular: '71234567',
+        motivo: 'Mesa más grande',
+        estado: 'pendiente',
+        createdAt: serverTimestamp(),
+        cliente_nombre: 'Cliente Mesa 5'
+      });
+      console.log('Solicitud creada:', docRef.id);
+      showToast("Solicitud simulada creada correctamente");
+    } catch (e) {
+      console.error("Error al simular solicitud:", e);
+      showToast("Error al simular solicitud", "error");
+    }
+  };
+
 
   // Mover Comanda de Mesa Origen a Mesa Destino Libre (Modo Mozo / Admin y Traslado Aprobado)
   const handleMoveTable = async (sourceTableId: number, targetTableId: number, requestId?: string) => {
@@ -2209,51 +2232,53 @@ export default function App() {
 
                   {/* Solicitudes de Cambio de Mesa en Admin */}
                   <div className="bg-[#292524] border border-[#3a3632] rounded-[20px] p-6 space-y-4">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <h3 className="text-lg font-serif font-bold text-[#f5efe6] flex items-center gap-2">
                         <ArrowRightLeft className="w-5 h-5 text-[#ff7a00]" />
                         <span>Solicitudes de Cambio de Mesa</span>
                       </h3>
-                      {pendingChangeRequests.length > 0 && (
-                        <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-[#ff7a00] text-black border border-amber-400 animate-pulse">
-                          {pendingChangeRequests.length} pendientes
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleSimulateRequest}
+                          className="px-3 py-1.5 rounded-xl bg-[#3a3632] hover:bg-[#ff7a00] text-xs font-bold text-[#f5efe6] hover:text-white transition-all cursor-pointer flex items-center gap-1.5 shadow"
+                          title="Simular solicitud de cambio de mesa"
+                        >
+                          <span>Simular solicitud</span>
+                        </button>
+                        {pendingChangeRequests.length > 0 && (
+                          <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-[#ff7a00] text-black border border-amber-400 animate-pulse">
+                            {pendingChangeRequests.length} pendientes
+                          </span>
+                        )}
+                      </div>
                     </div>
                     {pendingChangeRequests.length === 0 ? (
-                      <p className="text-sm text-[#a8a29e]">No hay solicitudes de cambio de mesa pendientes.</p>
+                      <p className="text-sm text-[#a8a29e]">No hay solicitudes pendientes</p>
                     ) : (
                       <div className="space-y-3">
                         {pendingChangeRequests.map((req) => {
                           const originTable = tables.find(t => t.id === req.mesa_origen);
                           return (
                             <div key={`admin-req-${req.id}`} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#1c1917] p-4 rounded-xl border border-[#3a3632] shadow-sm">
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-sm font-bold text-[#ff7a00]">Mesa #{req.mesa_origen} ({originTable?.name || 'Mesa'})</span>
-                                  {req.celular && (
-                                    <span className="text-xs text-[#a8a29e]">• WhatsApp: +591 {req.celular}</span>
-                                  )}
-                                </div>
-                                <p className="text-xs text-[#f5efe6] italic">"{req.motivo}"</p>
+                              <div className="space-y-1 text-xs">
+                                <p className="font-bold text-[#f5efe6]">
+                                  Mesa {req.mesa_origen} solicita cambio - Motivo: {req.motivo || 'Mesa más grande'} - Cel: {req.celular || '71234567'}
+                                </p>
                               </div>
                               <button
                                 onClick={() => {
-                                  if (originTable) {
-                                    setMoveStaffModal({
-                                      isOpen: true,
-                                      sourceTable: originTable,
-                                      requestId: req.id,
-                                      requestDetails: req
-                                    });
-                                  } else {
-                                    showToast("Mesa de origen no encontrada", "error");
-                                  }
+                                  const originTable = tables.find(t => t.id === req.mesa_origen) || { id: req.mesa_origen, name: `Mesa ${req.mesa_origen}`, seats: 4, status: 'occupied', currentOrder: null };
+                                  setMoveStaffModal({
+                                    isOpen: true,
+                                    sourceTable: originTable as any,
+                                    requestId: req.id,
+                                    requestDetails: req
+                                  });
                                 }}
                                 className="px-3.5 py-2 rounded-lg bg-[#ff7a00] hover:bg-[#ff8c1a] text-xs font-black text-black cursor-pointer transition-all flex items-center justify-center gap-1.5 self-start sm:self-auto shrink-0 shadow-md"
                               >
                                 <ArrowRightLeft className="w-3.5 h-3.5" />
-                                <span>Mover a otra mesa</span>
+                                <span>[Botón Mover]</span>
                               </button>
                             </div>
                           );
