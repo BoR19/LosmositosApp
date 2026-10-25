@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   X, ShoppingBag, Plus, Minus, Trash2, Send, CheckCircle2, Utensils, 
   FileText, Sparkles, DollarSign, QrCode, AlertTriangle, ShieldCheck, 
-  Lock, KeyRound, Bell, ArrowRight, Check, Printer, MessageSquare, Smartphone
+  Lock, KeyRound, Bell, ArrowRight, Check, Printer, MessageSquare, Smartphone,
+  ArrowRightLeft
 } from 'lucide-react';
 import { doc, getDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -32,6 +33,7 @@ interface CartModalProps {
   staffName?: string;
   onStaffLoginSuccess?: (session: any) => void;
   onCallWaiterForBill?: () => void;
+  onRequestTableChange?: () => void;
 }
 
 export const CartModal: React.FC<CartModalProps> = ({
@@ -57,6 +59,7 @@ export const CartModal: React.FC<CartModalProps> = ({
   staffName = 'Personal',
   onStaffLoginSuccess,
   onCallWaiterForBill,
+  onRequestTableChange,
 }) => {
   // Method tab for billing view ('EFECTIVO' | 'QR')
   const [billMethod, setBillMethod] = useState<'EFECTIVO' | 'QR'>('EFECTIVO');
@@ -356,13 +359,28 @@ Gastronomía de Altura • Tarija`;
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 min-h-0 overscroll-contain">
           {/* Table Selector Box inside Cart: Locked badge in client mode, Select dropdown in staff mode */}
           {isClient ? (
-            <div className="p-3.5 rounded-xl border border-[#ff7a00]/30 bg-[#292524] flex items-center justify-between text-xs shadow-sm">
-              <span className="text-[#a8a29e] font-medium flex items-center gap-1.5">
-                <span>Tu Mesa:</span>
-              </span>
-              <div className="flex items-center gap-2 bg-[#1c1917] border border-[#ff7a00]/40 px-3 py-1.5 rounded-lg font-bold text-[#ff7a00] shadow-sm">
-                <span>{currentTable ? currentTable.name : `Mesa ${effectiveMesaQR}`} - Salón Central</span>
-                <span title="Mesa fijada por QR">🔒</span>
+            <div className="p-3.5 rounded-xl border border-[#ff7a00]/30 bg-[#292524] space-y-2 shadow-sm">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-[#a8a29e] font-medium flex items-center gap-1.5">
+                  <span>Tu Mesa:</span>
+                </span>
+                <div className="flex items-center gap-2 bg-[#1c1917] border border-[#ff7a00]/40 px-3 py-1.5 rounded-lg font-bold text-[#ff7a00] shadow-sm">
+                  <span>{currentTable ? currentTable.name : `Mesa ${effectiveMesaQR}`} - Salón Central</span>
+                  <span title="Mesa fijada por QR">🔒</span>
+                </div>
+              </div>
+              <div className="flex justify-end pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    if (onRequestTableChange) onRequestTableChange();
+                  }}
+                  className="text-[11px] text-[#a8a29e] hover:text-[#ff7a00] underline transition-colors cursor-pointer flex items-center gap-1 font-medium"
+                >
+                  <ArrowRightLeft className="w-3 h-3 text-[#ff7a00]" />
+                  <span>¿Cambiar de mesa?</span>
+                </button>
               </div>
             </div>
           ) : (

@@ -8,6 +8,7 @@ interface MobileDockProps {
   cart: CartItem[];
   orders: Order[];
   waiterCallsCount?: number;
+  changeRequestsCount?: number;
   onOpenCart: () => void;
   onOpenWelcome?: () => void;
   isCartOpen: boolean;
@@ -21,6 +22,7 @@ export const MobileDock: React.FC<MobileDockProps> = ({
   cart,
   orders,
   waiterCallsCount = 0,
+  changeRequestsCount = 0,
   onOpenCart,
   onOpenWelcome,
   isCartOpen,
@@ -115,6 +117,13 @@ export const MobileDock: React.FC<MobileDockProps> = ({
                 {tab.id === 'cart-tab' && totalCartCount > 0 && (
                   <span className="absolute -top-1.5 -right-2.5 bg-[#ff7a00] text-white text-[10px] font-extrabold w-4 h-4 rounded-full flex items-center justify-center shadow-md animate-pulse">
                     {totalCartCount}
+                  </span>
+                )}
+
+                {/* Badge de solicitudes de cambio de mesa */}
+                {tab.id === 'tables' && changeRequestsCount > 0 && (
+                  <span className="absolute -top-1.5 -right-2.5 bg-[#ff7a00] text-black text-[10px] font-extrabold w-4 h-4 rounded-full flex items-center justify-center animate-pulse">
+                    {changeRequestsCount}
                   </span>
                 )}
 

@@ -3,14 +3,14 @@ import {
   Utensils, QrCode, ShoppingBag, Clock, Sparkles, AlertCircle, 
   ChefHat, Layers, Award, Bell, FileText, CheckCheck, LogIn, LogOut, Lock,
   Plus, Trash2, Pencil, Search, DollarSign, Image as ImageIcon, SlidersHorizontal,
-  Building2, Home
+  Building2, Home, ArrowRightLeft
 } from 'lucide-react';
 import { db, auth, googleProvider } from './firebase.ts';
-import { collection, onSnapshot, addDoc, updateDoc, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, updateDoc, doc, setDoc, deleteDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
 
 import { MENU_CATEGORIAS, INITIAL_MENU, INITIAL_TABLES, formatTableOptionLabel } from './data/menuData.ts';
-import { MenuItem, CartItem, Table, Order, OrderItem, WaiterCall, NotificationState, RestaurantProfile } from './types/index.ts';
+import { MenuItem, CartItem, Table, Order, OrderItem, WaiterCall, NotificationState, RestaurantProfile, SolicitudCambio } from './types/index.ts';
 import { ProductCard } from './components/ProductCard.tsx';
 import { CartModal } from './components/CartModal.tsx';
 import { FloatingCartBar } from './components/FloatingCartBar.tsx';
@@ -23,6 +23,8 @@ import { AddEditDishModal, QuickPriceModal, DeleteDishModal } from './components
 import { RestaurantProfileAdmin } from './components/RestaurantProfileAdmin.tsx';
 import { WelcomeScreen } from './components/WelcomeScreen.tsx';
 import { TicketHistoryAdmin } from './components/TicketHistoryAdmin.tsx';
+import { RequestTableChangeModal, MoveTableStaffModal, ClientConfirmMoveModal } from './components/TableChangeModals.tsx';
+
 
 
 export default function App() {
@@ -148,6 +150,29 @@ export default function App() {
   const [waiterCalls, setWaiterCalls] = useState<WaiterCall[]>([]);
   const [isAddTableModalOpen, setIsAddTableModalOpen] = useState<boolean>(false);
   const [tableToDelete, setTableToDelete] = useState<Table | null>(null);
+
+  // Estados para Solicitudes de Cambio de Mesa
+  const [changeRequests, setChangeRequests] = useState<SolicitudCambio[]>([]);
+  const pendingChangeRequests = useMemo(() => {
+    return changeRequests.filter(r => r.estado === 'pendiente');
+  }, [changeRequests]);
+
+  const [isRequestChangeModalOpen, setIsRequestChangeModalOpen] = useState<boolean>(false);
+  const [moveStaffModal, setMoveStaffModal] = useState<{
+    isOpen: boolean;
+    sourceTable: Table | null;
+    requestId?: string;
+    requestDetails?: SolicitudCambio | null;
+  }>({
+    isOpen: false,
+    sourceTable: null,
+  });
+
+  const [clientMovePrompt, setClientMovePrompt] = useState<{
+    isOpen: boolean;
+    fromMesa: number;
+    toMesa: number;
+  } | null>(null);
 
   // Estados para la gestión de Platos, Bebidas y Precios del Menú:
   const [dishModalOpen, setDishModalOpen] = useState<boolean>(false);
@@ -367,6 +392,16 @@ export default function App() {
       console.warn("Perfil snapshot listener error:", error);
     });
 
+    const unsubscribeRequests = onSnapshot(collection(db, 'solicitudes_cambio'), (snapshot) => {
+      const liveReqs = snapshot.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      })) as SolicitudCambio[];
+      setChangeRequests(liveReqs);
+    }, (error) => {
+      console.warn("Solicitudes cambio snapshot listener error:", error);
+    });
+
     return () => {
       unsubscribeAuth();
       unsubscribeMenu();
@@ -374,6 +409,7 @@ export default function App() {
       unsubscribeCalls();
       unsubscribeTables();
       unsubscribeProfile();
+      unsubscribeRequests();
     };
   }, []);
 
@@ -407,8 +443,27 @@ export default function App() {
       if (urlMesa && !isNaN(Number(urlMesa))) {
         const urlMesaNum = Number(urlMesa);
 
-        // Si mesaParam != storedMesa, es nueva mesa: actualiza churo_mesa = mesaParam y limpia churo_carrito
+        // Si mesaParam != storedMesa:
         if (storedMesa && storedMesa !== urlMesa) {
+          const storedMesaNum = Number(storedMesa);
+          const activeOrderOldMesa = orders.find(
+            o => o.tableId === storedMesaNum && 
+            o.status !== 'pagado' && 
+            o.status !== 'cancelado'
+          );
+
+          if (activeOrderOldMesa) {
+            // Cliente tiene comanda activa en la mesa anterior:
+            // Mostrar modal "¿Moverte de Mesa X a Mesa Y?" en vez de bienvenida normal
+            setShowWelcomeScreen(false);
+            setClientMovePrompt({
+              isOpen: true,
+              fromMesa: storedMesaNum,
+              toMesa: urlMesaNum
+            });
+            return;
+          }
+
           localStorage.setItem('churo_mesa', urlMesa);
           localStorage.removeItem('churo_carrito');
           setCart([]);
@@ -437,7 +492,7 @@ export default function App() {
     } catch (e) {
       console.warn("Error en detección y gestión de sesión de mesa:", e);
     }
-  }, [isClientMode, isStaff]);
+  }, [isClientMode, isStaff, orders]);
 
   // Bloquear cambio de mesa si es cliente
   const handleTableChange = (tableId: number) => {
@@ -1062,6 +1117,152 @@ export default function App() {
     }
   };
 
+  // Crear Solicitud de Cambio de Mesa (Modo Cliente)
+  const handleCreateChangeRequest = async (motivo: string, celular?: string) => {
+    const mesaNum = currentTableId || (mesaQR ? Number(mesaQR) : null);
+    if (!mesaNum) {
+      showToast("Por favor selecciona tu mesa antes de solicitar un cambio.", "error");
+      return;
+    }
+    try {
+      const cleanPhone = (celular || localStorage.getItem('churo_celular') || '').replace(/\D/g, '');
+      await addDoc(collection(db, 'solicitudes_cambio'), {
+        mesa_origen: Number(mesaNum),
+        mesa_destino: null,
+        celular: cleanPhone || null,
+        motivo: motivo || 'Solicitud de cambio de mesa',
+        estado: 'pendiente',
+        createdAt: serverTimestamp()
+      });
+      showToast("Solicitud enviada al mozo. ¡Un mozo se acercará pronto! 🛎️");
+    } catch (e) {
+      console.error("Error al enviar solicitud de cambio de mesa:", e);
+      showToast("Error al enviar la solicitud. Intenta de nuevo.", "error");
+    }
+  };
+
+  // Mover Comanda de Mesa Origen a Mesa Destino Libre (Modo Mozo / Admin y Traslado Aprobado)
+  const handleMoveTable = async (sourceTableId: number, targetTableId: number, requestId?: string) => {
+    try {
+      const sourceTable = tables.find(t => t.id === sourceTableId);
+      const targetTable = tables.find(t => t.id === targetTableId);
+      const targetTableName = targetTable ? targetTable.name : `Mesa #${targetTableId}`;
+
+      // a) Lee comanda de mesa_origen de mesas_activas/mesa_X
+      const sourceMesaActivaRef = doc(db, 'mesas_activas', `mesa_${sourceTableId}`);
+      let sourceData: any = null;
+      try {
+        const snap = await getDoc(sourceMesaActivaRef);
+        if (snap.exists()) {
+          sourceData = snap.data();
+        }
+      } catch (e) {
+        console.warn("Lectura mesas_activas origen:", e);
+      }
+
+      const clienteCelular = sourceData?.cliente_celular || localStorage.getItem('churo_celular') || null;
+
+      // Buscar comanda activa en 'pedidos'
+      const activeOrder = orders.find(
+        o => o.tableId === sourceTableId && 
+        o.status !== 'pagado' && 
+        o.status !== 'cancelado'
+      );
+
+      // b) Escribe esa comanda en mesas_activas/mesa_destino
+      const targetMesaActivaRef = doc(db, 'mesas_activas', `mesa_${targetTableId}`);
+      await setDoc(targetMesaActivaRef, {
+        mesa: targetTableId,
+        cliente_celular: clienteCelular,
+        cliente_llego: sourceData?.cliente_llego || serverTimestamp(),
+        trasladado_desde: sourceTableId,
+        trasladado_el: serverTimestamp(),
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+
+      // Actualizar la comanda activa en pedidos para que cocina y cuenta apunten a la nueva mesa
+      if (activeOrder) {
+        await updateDoc(doc(db, 'pedidos', activeOrder.id), {
+          tableId: targetTableId,
+          tableName: targetTableName,
+          trasladadoDesde: sourceTableId,
+          trasladadoAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+      }
+
+      // d) Borra o marca mesa_origen como LIBRE
+      try {
+        await deleteDoc(sourceMesaActivaRef);
+      } catch (delErr) {
+        console.warn("Delete mesas_activas origen fallback:", delErr);
+      }
+      await updateDoc(doc(db, 'mesas', String(sourceTableId)), {
+        status: 'free',
+        currentOrder: null
+      });
+
+      // e) Marca mesa_destino como OCUPADA (o por-pagar según corresponda)
+      const targetStatus = activeOrder?.status === 'por-pagar' ? 'por-pagar' : 'occupied';
+      await updateDoc(doc(db, 'mesas', String(targetTableId)), {
+        status: targetStatus,
+        currentOrder: activeOrder ? { ...activeOrder, tableId: targetTableId, tableName: targetTableName } : null
+      });
+
+      // f) Actualiza solicitud a estado:'completado', mesa_destino: Y
+      if (requestId) {
+        try {
+          await updateDoc(doc(db, 'solicitudes_cambio', requestId), {
+            estado: 'completado',
+            mesa_destino: targetTableId,
+            atendidoAt: serverTimestamp()
+          });
+        } catch (rErr) {
+          console.warn("Update solicitud_cambio:", rErr);
+        }
+      } else {
+        const matchingReq = changeRequests.find(r => r.mesa_origen === sourceTableId && r.estado === 'pendiente');
+        if (matchingReq) {
+          try {
+            await updateDoc(doc(db, 'solicitudes_cambio', matchingReq.id), {
+              estado: 'completado',
+              mesa_destino: targetTableId,
+              atendidoAt: serverTimestamp()
+            });
+          } catch (rErr2) {
+            console.warn("Update solicitud_cambio matching:", rErr2);
+          }
+        }
+      }
+
+      // g) Opcional: actualiza clientes/{celular} ultima_mesa
+      if (clienteCelular) {
+        try {
+          await setDoc(doc(db, 'clientes', String(clienteCelular)), {
+            ultima_mesa: targetTableId,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+        } catch (cErr) {
+          console.warn("Actualizar clientes doc:", cErr);
+        }
+      }
+
+      // Si el usuario en este navegador es el cliente de esa mesa, actualizar su sesión a la nueva mesa
+      const storedMesa = localStorage.getItem('churo_mesa');
+      if (storedMesa && Number(storedMesa) === sourceTableId) {
+        localStorage.setItem('churo_mesa', String(targetTableId));
+        setCurrentTableId(targetTableId);
+        const newUrl = new URL(window.location.href);
+        newUrl.searchParams.set('mesa', String(targetTableId));
+        window.history.replaceState({}, '', newUrl.toString());
+      }
+
+      showToast(`¡Comanda trasladada de Mesa ${sourceTableId} a Mesa ${targetTableId} con éxito! 🔄`);
+    } catch (e) {
+      console.error("Error al trasladar mesa:", e);
+      showToast("Hubo un error al trasladar la mesa. Intenta nuevamente.", "error");
+    }
+  };
+
   // Add Table to Firestore and Local State
   const handleAddTable = async (newTable: { id: number; name: string; seats: number }) => {
     try {
@@ -1313,14 +1514,19 @@ export default function App() {
                   {((tab.isStaff && !isStaffAuthenticated) || (tab.id === 'admin' && !isAdminAuthenticated)) && (
                     <Lock className="w-3 h-3 text-[#78716c]" />
                   )}
+                  {tab.id === 'tables' && pendingChangeRequests.length > 0 && (
+                    <span className="ml-1 px-1.5 min-w-[20px] h-5 bg-[#ff7a00] text-black rounded-full text-[10px] font-black flex items-center justify-center animate-pulse" title="Solicitudes de cambio de mesa">
+                      🔔 {pendingChangeRequests.length}
+                    </span>
+                  )}
                   {tab.id === 'kitchen' && activeCount > 0 && (
                     <span className="ml-1 w-5 h-5 bg-amber-500 text-black rounded-full text-[10px] font-bold flex items-center justify-center">
                       {activeCount}
                     </span>
                   )}
-                  {tab.id === 'admin' && waiterCalls.length > 0 && (
+                  {tab.id === 'admin' && (waiterCalls.length > 0 || pendingChangeRequests.length > 0) && (
                     <span className="ml-1 px-1.5 min-w-[20px] h-5 bg-red-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center animate-pulse">
-                      {waiterCalls.length}
+                      {waiterCalls.length + pendingChangeRequests.length}
                     </span>
                   )}
                 </button>
@@ -1402,10 +1608,20 @@ export default function App() {
                 </p>
                 <div className="pt-2 flex flex-wrap gap-2.5 items-center">
                   {isClientMode ? (
-                    <div className="flex items-center gap-2 border border-[#ff7a00]/40 bg-[#1c1917] rounded-xl px-3.5 py-2 text-xs font-bold text-[#ff7a00] shadow-sm">
-                      <Lock className="w-3.5 h-3.5 text-[#ff7a00]" />
-                      <span>{tables.find(t => t.id === currentTableId)?.name || `Mesa ${currentTableId}`} - Salón Central</span>
-                      <span className="text-[10px] text-[#a8a29e] font-normal" title="Mesa asignada por QR bloqueada">🔒</span>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2 border border-[#ff7a00]/40 bg-[#1c1917] rounded-xl px-3.5 py-2 text-xs font-bold text-[#ff7a00] shadow-sm">
+                        <Lock className="w-3.5 h-3.5 text-[#ff7a00]" />
+                        <span>{tables.find(t => t.id === currentTableId)?.name || `Mesa ${currentTableId}`} - Salón Central</span>
+                        <span className="text-[10px] text-[#a8a29e] font-normal" title="Mesa asignada por QR bloqueada">🔒</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsRequestChangeModalOpen(true)}
+                        className="text-[11px] text-[#a8a29e] hover:text-[#ff7a00] underline transition-colors cursor-pointer flex items-center gap-1 self-start font-medium pt-0.5"
+                      >
+                        <ArrowRightLeft className="w-3 h-3 text-[#ff7a00]" />
+                        <span>¿Cambiar de mesa?</span>
+                      </button>
                     </div>
                   ) : (
                     <div className={`flex items-center gap-2 border rounded-xl px-3 py-2 transition-colors ${
@@ -1578,9 +1794,14 @@ export default function App() {
                   <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-[#ff7a00]/20 text-[#ff7a00] border border-[#ff7a00]/30 font-sans">
                     {tables.length} mesas
                   </span>
+                  {pendingChangeRequests.length > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-amber-500 text-black border border-amber-400 font-sans animate-pulse flex items-center gap-1">
+                      <Bell className="w-3 h-3" /> {pendingChangeRequests.length} {pendingChangeRequests.length === 1 ? 'cambio pendiente' : 'cambios pendientes'}
+                    </span>
+                  )}
                 </div>
                 <p className="text-sm text-[#a8a29e] mt-1">
-                  Visualiza el consumo en tiempo real, agrega o elimina mesas, cobra o imprime los códigos QR para cada mesa.
+                  Visualiza el consumo en tiempo real, traslada comandas a mesas libres, cobra o imprime los códigos QR.
                 </p>
               </div>
               <button
@@ -1591,6 +1812,76 @@ export default function App() {
                 <span>Agregar Nueva Mesa</span>
               </button>
             </div>
+
+            {/* Banner de Solicitudes de Cambio de Mesa Pendientes */}
+            {pendingChangeRequests.length > 0 && (
+              <div className="bg-[#1c1917] border-2 border-amber-500/50 rounded-[20px] p-4 sm:p-5 shadow-xl space-y-3 animate-fadeIn">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                      <Bell className="w-4 h-4 animate-bounce" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm sm:text-base font-bold text-[#f5efe6] flex items-center gap-2">
+                        <span>Solicitudes de Cambio de Mesa</span>
+                        <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-[#ff7a00] text-black">
+                          {pendingChangeRequests.length}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-[#a8a29e]">
+                        Clientes en salón solicitando traslado de mesa
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                  {pendingChangeRequests.map(req => {
+                    const originTable = tables.find(t => t.id === req.mesa_origen);
+                    return (
+                      <div key={`req-card-${req.id}`} className="bg-[#292524] border border-[#3a3632] rounded-xl p-3.5 flex flex-col justify-between gap-3 shadow-sm">
+                        <div className="space-y-1 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-[#ff7a00] text-sm">Mesa #{req.mesa_origen} ({originTable?.name || 'Mesa'})</span>
+                            <span className="text-[#a8a29e] text-[10px] flex items-center gap-1 bg-[#1c1917] px-2 py-0.5 rounded border border-[#3a3632]">
+                              <Clock className="w-3 h-3 text-amber-400" /> Pendiente
+                            </span>
+                          </div>
+                          <p className="text-[#f5efe6] italic bg-[#1c1917] p-2 rounded-lg border border-[#3a3632]/80 mt-1">
+                            "{req.motivo}"
+                          </p>
+                          {req.celular && (
+                            <p className="text-[#a8a29e] text-[11px]">
+                              WhatsApp: +591 {req.celular}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              if (originTable) {
+                                setMoveStaffModal({
+                                  isOpen: true,
+                                  sourceTable: originTable,
+                                  requestId: req.id,
+                                  requestDetails: req
+                                });
+                              } else {
+                                showToast("Mesa de origen no encontrada", "error");
+                              }
+                            }}
+                            className="flex-1 py-2 px-3 rounded-xl bg-[#ff7a00] hover:bg-[#ff8c1a] text-black text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+                          >
+                            <ArrowRightLeft className="w-3.5 h-3.5" />
+                            <span>Mover a otra mesa</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {tables.map(table => (
@@ -1624,6 +1915,30 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Aviso de solicitud de cambio para esta mesa específica */}
+                    {pendingChangeRequests.some(r => r.mesa_origen === table.id) && (
+                      <div className="mt-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-between gap-2 animate-pulse">
+                        <span className="flex items-center gap-1.5 font-bold">
+                          <ArrowRightLeft className="w-4 h-4 text-[#ff7a00]" />
+                          <span>Solicitud de cambio</span>
+                        </span>
+                        <button
+                          onClick={() => {
+                            const req = pendingChangeRequests.find(r => r.mesa_origen === table.id);
+                            setMoveStaffModal({
+                              isOpen: true,
+                              sourceTable: table,
+                              requestId: req?.id,
+                              requestDetails: req || null
+                            });
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#ff7a00] hover:bg-[#ff8c1a] text-black text-[11px] font-black cursor-pointer transition-colors"
+                        >
+                          Mover
+                        </button>
+                      </div>
+                    )}
+
                     {waiterCalls.some(c => c.tableId === table.id) && (
                       <div className="mt-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-between gap-2 animate-pulse">
                         <span className="flex items-center gap-1.5 font-bold">
@@ -1652,17 +1967,34 @@ export default function App() {
                     </button>
                     {table.status !== 'free' ? (
                       isStaffAuthenticated ? (
-                        <button
-                          onClick={() => {
-                            setCurrentTableId(table.id);
-                            setModalMode('bill');
-                            setCashAmount('');
-                            setCustomerModalOpen(true);
-                          }}
-                          className="w-full py-2.5 px-3 rounded-[12px] bg-emerald-600 hover:bg-emerald-700 text-[13px] font-semibold text-white transition-colors flex items-center justify-center gap-2 cursor-pointer shadow"
-                        >
-                          <CheckCheck className="w-4 h-4" /> Cobrar y Liberar Mesa
-                        </button>
+                        <>
+                          <button
+                            onClick={() => {
+                              setCurrentTableId(table.id);
+                              setModalMode('bill');
+                              setCashAmount('');
+                              setCustomerModalOpen(true);
+                            }}
+                            className="w-full py-2.5 px-3 rounded-[12px] bg-emerald-600 hover:bg-emerald-700 text-[13px] font-semibold text-white transition-colors flex items-center justify-center gap-2 cursor-pointer shadow"
+                          >
+                            <CheckCheck className="w-4 h-4" /> Cobrar y Liberar Mesa
+                          </button>
+                          <button
+                            onClick={() => {
+                              const req = pendingChangeRequests.find(r => r.mesa_origen === table.id);
+                              setMoveStaffModal({
+                                isOpen: true,
+                                sourceTable: table,
+                                requestId: req?.id,
+                                requestDetails: req || null
+                              });
+                            }}
+                            className="w-full py-2 px-3 rounded-[12px] bg-[#1c1917] hover:bg-[#3a3632] border border-[#3a3632] hover:border-[#ff7a00]/50 text-[12px] font-semibold text-[#f5efe6] transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <ArrowRightLeft className="w-3.5 h-3.5 text-[#ff7a00]" />
+                            <span>Mover a otra mesa</span>
+                          </button>
+                        </>
                       ) : null
                     ) : (
                       isStaffAuthenticated ? (
@@ -1871,6 +2203,61 @@ export default function App() {
                             </button>
                           </div>
                         ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Solicitudes de Cambio de Mesa en Admin */}
+                  <div className="bg-[#292524] border border-[#3a3632] rounded-[20px] p-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-serif font-bold text-[#f5efe6] flex items-center gap-2">
+                        <ArrowRightLeft className="w-5 h-5 text-[#ff7a00]" />
+                        <span>Solicitudes de Cambio de Mesa</span>
+                      </h3>
+                      {pendingChangeRequests.length > 0 && (
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-[#ff7a00] text-black border border-amber-400 animate-pulse">
+                          {pendingChangeRequests.length} pendientes
+                        </span>
+                      )}
+                    </div>
+                    {pendingChangeRequests.length === 0 ? (
+                      <p className="text-sm text-[#a8a29e]">No hay solicitudes de cambio de mesa pendientes.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {pendingChangeRequests.map((req) => {
+                          const originTable = tables.find(t => t.id === req.mesa_origen);
+                          return (
+                            <div key={`admin-req-${req.id}`} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#1c1917] p-4 rounded-xl border border-[#3a3632] shadow-sm">
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-bold text-[#ff7a00]">Mesa #{req.mesa_origen} ({originTable?.name || 'Mesa'})</span>
+                                  {req.celular && (
+                                    <span className="text-xs text-[#a8a29e]">• WhatsApp: +591 {req.celular}</span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-[#f5efe6] italic">"{req.motivo}"</p>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  if (originTable) {
+                                    setMoveStaffModal({
+                                      isOpen: true,
+                                      sourceTable: originTable,
+                                      requestId: req.id,
+                                      requestDetails: req
+                                    });
+                                  } else {
+                                    showToast("Mesa de origen no encontrada", "error");
+                                  }
+                                }}
+                                className="px-3.5 py-2 rounded-lg bg-[#ff7a00] hover:bg-[#ff8c1a] text-xs font-black text-black cursor-pointer transition-all flex items-center justify-center gap-1.5 self-start sm:self-auto shrink-0 shadow-md"
+                              >
+                                <ArrowRightLeft className="w-3.5 h-3.5" />
+                                <span>Mover a otra mesa</span>
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -2189,7 +2576,7 @@ export default function App() {
         staffName={user?.displayName || staffSession?.name || 'Personal'}
         onStaffLoginSuccess={(session) => setStaffSession(session)}
         onCallWaiterForBill={handleCallWaiterForBill}
-
+        onRequestTableChange={() => setIsRequestChangeModalOpen(true)}
       />
 
       {/* Floating Mobile Cart Bar (Hides when Cart Modal is Open) */}
@@ -2210,6 +2597,7 @@ export default function App() {
         cart={cart}
         orders={orders}
         waiterCallsCount={waiterCalls.length}
+        changeRequestsCount={pendingChangeRequests.length}
         isCartOpen={customerModalOpen}
         isStaffAuthenticated={isStaffAuthenticated}
         isAdminAuthenticated={isAdminAuthenticated}
@@ -2246,6 +2634,48 @@ export default function App() {
         onClose={() => setTableToDelete(null)}
         onConfirmDelete={handleDeleteTable}
       />
+
+      {/* Modales para Funcionalidad de Cambio de Mesa */}
+      {/* 1. Modal para que el cliente solicite cambio de mesa con motivo */}
+      <RequestTableChangeModal
+        isOpen={isRequestChangeModalOpen}
+        onClose={() => setIsRequestChangeModalOpen(false)}
+        mesaOrigen={currentTableId || (mesaQR ? Number(mesaQR) : 1)}
+        initialCelular={localStorage.getItem('churo_celular') || ''}
+        onSubmit={handleCreateChangeRequest}
+      />
+
+      {/* 2. Modal para que el mozo o admin mueva la comanda a otra mesa libre */}
+      <MoveTableStaffModal
+        isOpen={moveStaffModal.isOpen}
+        onClose={() => setMoveStaffModal({ isOpen: false, sourceTable: null })}
+        sourceTable={moveStaffModal.sourceTable}
+        allTables={tables}
+        requestId={moveStaffModal.requestId}
+        requestDetails={moveStaffModal.requestDetails}
+        onConfirmMove={handleMoveTable}
+      />
+
+      {/* 3. Modal para el cliente cuando escanea un nuevo QR teniendo comanda activa */}
+      {clientMovePrompt && (
+        <ClientConfirmMoveModal
+          isOpen={clientMovePrompt.isOpen}
+          fromMesa={clientMovePrompt.fromMesa}
+          toMesa={clientMovePrompt.toMesa}
+          onConfirmMove={async () => {
+            await handleMoveTable(clientMovePrompt.fromMesa, clientMovePrompt.toMesa);
+            setClientMovePrompt(null);
+          }}
+          onStay={() => {
+            const newUrl = new URL(window.location.href);
+            newUrl.searchParams.set('mesa', String(clientMovePrompt.fromMesa));
+            window.history.replaceState({}, '', newUrl.toString());
+            setCurrentTableId(clientMovePrompt.fromMesa);
+            setClientMovePrompt(null);
+            showToast(`Permaneces en tu Mesa ${clientMovePrompt.fromMesa}`);
+          }}
+        />
+      )}
 
       {/* =========================================================================
        * 🍽️ VENTANAS MÁGICAS (MODALES) PARA PLATOS, PRECIOS Y FOTOS:

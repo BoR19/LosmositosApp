@@ -92,3 +92,15 @@ export interface TicketHistoryItem {
   reimpresiones?: number;
 }
 
+export interface SolicitudCambio {
+  id: string;
+  mesa_origen: number;
+  mesa_destino?: number | null;
+  celular?: string | null;
+  motivo: string;
+  estado: 'pendiente' | 'completado' | 'cancelado';
+  createdAt?: any;
+  atendidoAt?: any;
+}
+
+
