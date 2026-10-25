@@ -77,7 +77,7 @@ export const CartModal: React.FC<CartModalProps> = ({
   const isClient = propIsClientMode !== undefined 
     ? propIsClientMode 
     : Boolean(!isStaff && (mesaQR || (typeof localStorage !== 'undefined' && localStorage.getItem('churo_mesa'))));
-  const effectiveMesaQR = (typeof localStorage !== 'undefined' ? localStorage.getItem('churo_mesa') : null) || mesaQR || currentTableId;
+  const effectiveMesaQR = mesaQR || (typeof localStorage !== 'undefined' ? localStorage.getItem('churo_mesa') : null) || currentTableId;
   const effectiveTableNumber = isClient ? (Number(effectiveMesaQR) || currentTableId) : currentTableId;
 
   
@@ -210,6 +210,21 @@ export const CartModal: React.FC<CartModalProps> = ({
     try {
       // b) Cobrar: actualiza Firestore mesas y comanda en parent
       onPayment(billMethod);
+
+      // Evento de pago y liberación de sesión: BEST PRACTICE
+      try {
+        const mesaActual = String(effectiveTableNumber || currentTable?.id || '');
+        localStorage.setItem('churo_sesion_activa', 'false');
+        localStorage.removeItem('churo_carrito');
+        if (mesaActual) {
+          localStorage.setItem('churo_ultima_mesa', mesaActual);
+        }
+        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
+        localStorage.removeItem('churo_fecha_inicio');
+        // Mantén churo_celular para pre-llenar la próxima vez
+      } catch (stErr) {
+        console.warn("Error updating session storage on checkout:", stErr);
+      }
 
       // c) Generar texto limpio de recibo
       const mesaName = currentTable ? currentTable.name : `Mesa #${effectiveTableNumber}`;

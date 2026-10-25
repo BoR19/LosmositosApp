@@ -39,7 +39,47 @@ export default function App() {
   const isStaffAuthenticated = Boolean(user || staffSession);
   const isAdminAuthenticated = Boolean(user || staffSession?.role === 'admin');
   const [activeTab, setActiveTab] = useState<string>('menu'); 
-  const [cart, setCart] = useState<CartItem[]>([]);
+  // Carrito persistente con ciclo de vida de sesión y verificación de expiración (> 4 horas sin pagar)
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    try {
+      if (typeof localStorage === 'undefined') return [];
+      
+      const sesionActiva = localStorage.getItem('churo_sesion_activa');
+      if (sesionActiva === 'false') {
+        localStorage.removeItem('churo_carrito');
+        return [];
+      }
+
+      // Fallback: si churo_fecha > 4 horas y nunca pagó, limpia carrito
+      const fechaRef = localStorage.getItem('churo_fecha_inicio') || localStorage.getItem('churo_fecha');
+      if (fechaRef) {
+        const elapsedHours = (Date.now() - new Date(fechaRef).getTime()) / (1000 * 60 * 60);
+        if (elapsedHours > 4) {
+          localStorage.removeItem('churo_carrito');
+          localStorage.setItem('churo_sesion_activa', 'false');
+          return [];
+        }
+      }
+
+      const savedCart = localStorage.getItem('churo_carrito');
+      return savedCart ? JSON.parse(savedCart) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Sincronizar automáticamente cambios del carrito con churo_carrito en localStorage
+  useEffect(() => {
+    try {
+      if (cart.length > 0) {
+        localStorage.setItem('churo_carrito', JSON.stringify(cart));
+      } else {
+        localStorage.removeItem('churo_carrito');
+      }
+    } catch {
+      // ignore
+    }
+  }, [cart]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [menu, setMenu] = useState<MenuItem[]>(INITIAL_MENU);
   const [tables, setTables] = useState<Table[]>(INITIAL_TABLES);
@@ -76,34 +116,22 @@ export default function App() {
   );
 
   // UI & Interaction States
-  // Initialize from ?mesa= query parameter or locked customer table
+  // Initialize from ?mesa= query parameter as single source of truth, or stored mesa if session is active
   const [currentTableId, setCurrentTableId] = useState<number | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const mesaParam = params.get('mesa');
       const savedMesa = typeof localStorage !== 'undefined' ? localStorage.getItem('churo_mesa') : null;
+      const sesionActiva = typeof localStorage !== 'undefined' ? localStorage.getItem('churo_sesion_activa') : null;
 
-      const isStaffInitial = Boolean(
-        (typeof localStorage !== 'undefined' && (
-          localStorage.getItem('admin_role') === 'mozo' || 
-          localStorage.getItem('admin_role') === 'admin' || 
-          localStorage.getItem('admin_role') === 'cajero' ||
-          localStorage.getItem('elchuro_staff_session') ||
-          localStorage.getItem('churo_role') === 'staff'
-        )) ||
-        (typeof window !== 'undefined' && (
-          window.location.pathname.includes('/admin') || 
-          window.location.pathname.includes('/mesas')
-        ))
-      );
-
-      // Si es cliente y ya tiene mesa fijada en su dispositivo, respetarla siempre
-      if (!isStaffInitial && savedMesa && !isNaN(Number(savedMesa))) {
-        return Number(savedMesa);
-      }
-
+      // 1. Usa siempre searchParams.get('mesa') como verdad para mostrar Mesa X, nunca localStorage viejo
       if (mesaParam && !isNaN(Number(mesaParam))) {
         return Number(mesaParam);
+      }
+
+      // 2. Solo si no hay ?mesa= en URL y la sesión no fue cerrada por pago, usar mesa previa
+      if (sesionActiva !== 'false' && savedMesa && !isNaN(Number(savedMesa))) {
+        return Number(savedMesa);
       }
     } catch {
       // ignore
@@ -151,12 +179,21 @@ export default function App() {
         const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${mesaNumStr}`) === 'true' || 
                                    sessionStorage.getItem(`churo_welcome_dismissed_${mesaNumStr}`) === 'true';
         const savedPhone = localStorage.getItem('churo_celular');
-        const savedMesa = localStorage.getItem('churo_mesa');
+        const storedMesa = localStorage.getItem('churo_mesa');
+        const sesionActiva = localStorage.getItem('churo_sesion_activa');
 
-        if (welcomeDoneSession || (savedPhone && savedMesa === mesaNumStr)) {
+        // Si ya completó la bienvenida en esta sesión de pestaña para esta mesa específica:
+        if (welcomeDoneSession) {
           return false;
         }
-        return true;
+
+        // Al mostrar bienvenida, si churo_sesion_activa === 'false' (pagó antes) o mesaParam != storedMesa,
+        // permite escanear cualquier mesa nueva de inmediato y mostrar bienvenida limpia
+        if (sesionActiva === 'false' || storedMesa !== mesaNumStr || !savedPhone) {
+          return true;
+        }
+
+        return false;
       }
     } catch {
       // ignore
@@ -340,12 +377,25 @@ export default function App() {
     };
   }, []);
 
-  // Detect Mesa from URL query params (e.g. ?mesa=3) with strict client mode lock & anti-tampering
+  // Detect Mesa from URL query params (e.g. ?mesa=3) with Best Practice session lifecycle
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const urlMesa = params.get('mesa');
-      const savedMesa = localStorage.getItem('churo_mesa');
+      const storedMesa = localStorage.getItem('churo_mesa');
+      const sesionActiva = localStorage.getItem('churo_sesion_activa');
+      const savedPhone = localStorage.getItem('churo_celular');
+
+      // Fallback: si churo_fecha > 4 horas y nunca pagó, limpia carrito
+      const fechaRef = localStorage.getItem('churo_fecha_inicio') || localStorage.getItem('churo_fecha');
+      if (fechaRef) {
+        const elapsed = (Date.now() - new Date(fechaRef).getTime()) / (1000 * 60 * 60);
+        if (elapsed > 4) {
+          localStorage.removeItem('churo_carrito');
+          localStorage.setItem('churo_sesion_activa', 'false');
+          setCart([]);
+        }
+      }
 
       // Sync role in localStorage
       if (isStaff) {
@@ -357,46 +407,42 @@ export default function App() {
       if (urlMesa && !isNaN(Number(urlMesa))) {
         const urlMesaNum = Number(urlMesa);
 
-        // Si es cliente y ya tenía una mesa guardada que no coincide con la URL:
-        if (isClientMode && savedMesa && Number(savedMesa) !== urlMesaNum) {
-          // Bloquear manipulación de URL y forzar mesa original
-          setCurrentTableId(Number(savedMesa));
-          const newUrl = new URL(window.location.href);
-          newUrl.searchParams.set('mesa', savedMesa);
-          window.history.replaceState({}, '', newUrl.toString());
-          showToast(`Tu mesa asignada es la Mesa ${savedMesa}. No puedes cambiar a la Mesa ${urlMesaNum}.`, 'error');
-          return;
+        // Si mesaParam != storedMesa, es nueva mesa: actualiza churo_mesa = mesaParam y limpia churo_carrito
+        if (storedMesa && storedMesa !== urlMesa) {
+          localStorage.setItem('churo_mesa', urlMesa);
+          localStorage.removeItem('churo_carrito');
+          setCart([]);
+        } else if (!storedMesa) {
+          localStorage.setItem('churo_mesa', urlMesa);
         }
 
-        // Asignar mesa de forma segura
+        // Usa siempre searchParams.get('mesa') como verdad para mostrar Mesa X
         setCurrentTableId(urlMesaNum);
-        if (isClientMode && !savedMesa) {
-          localStorage.setItem('churo_mesa', String(urlMesaNum));
-        }
 
-        const mesaNumStr = String(urlMesaNum);
-        const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${mesaNumStr}`) === 'true' || 
-                                   sessionStorage.getItem(`churo_welcome_dismissed_${mesaNumStr}`) === 'true';
-        const savedPhone = localStorage.getItem('churo_celular');
+        // Al mostrar bienvenida, si churo_sesion_activa === 'false', permite escanear cualquier mesa nueva de inmediato
+        const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${urlMesa}`) === 'true' || 
+                                   sessionStorage.getItem(`churo_welcome_dismissed_${urlMesa}`) === 'true';
 
-        if (!welcomeDoneSession && !(savedPhone && savedMesa === mesaNumStr)) {
-          setShowWelcomeScreen(true);
+        if (!welcomeDoneSession) {
+          if (sesionActiva === 'false' || storedMesa !== urlMesa || !savedPhone) {
+            setShowWelcomeScreen(true);
+          }
         }
-      } else if (isClientMode && savedMesa && !isNaN(Number(savedMesa))) {
-        setCurrentTableId(Number(savedMesa));
-        const newUrl = new URL(window.location.href);
-        newUrl.searchParams.set('mesa', savedMesa);
-        window.history.replaceState({}, '', newUrl.toString());
+      } else if (storedMesa && !isNaN(Number(storedMesa))) {
+        // Fallback a mesa guardada solo si la sesión sigue activa y no se ha pagado
+        if (sesionActiva !== 'false') {
+          setCurrentTableId(Number(storedMesa));
+        }
       }
     } catch (e) {
-      console.warn("Error en detección y blindaje de mesa:", e);
+      console.warn("Error en detección y gestión de sesión de mesa:", e);
     }
   }, [isClientMode, isStaff]);
 
   // Bloquear cambio de mesa si es cliente
   const handleTableChange = (tableId: number) => {
     if (isClientMode) {
-      const lockedMesa = localStorage.getItem('churo_mesa') || mesaQR;
+      const lockedMesa = mesaQR ? String(mesaQR) : (localStorage.getItem('churo_mesa') || null);
       if (lockedMesa && Number(lockedMesa) !== tableId) {
         showToast(`Tu mesa es la Mesa ${lockedMesa}. Solo el personal puede cambiar de mesa.`, 'error');
         return;
@@ -427,6 +473,22 @@ export default function App() {
       showToast('Este producto no está disponible en este momento.', 'error');
       return;
     }
+
+    // Al agregar plato: marcar sesión activa y guardar mesa
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const mesaParam = params.get('mesa') || (currentTableId !== null ? String(currentTableId) : null);
+      localStorage.setItem('churo_sesion_activa', 'true');
+      if (mesaParam) {
+        localStorage.setItem('churo_mesa', mesaParam);
+      }
+      if (!localStorage.getItem('churo_fecha_inicio')) {
+        localStorage.setItem('churo_fecha_inicio', new Date().toISOString());
+      }
+    } catch {
+      // ignore
+    }
+
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) {
@@ -899,6 +961,21 @@ export default function App() {
         status: 'free',
         currentOrder: null
       });
+
+      // Evento de pago y liberación de sesión: BEST PRACTICE
+      try {
+        const mesaActual = String(tableObj.id);
+        localStorage.setItem('churo_sesion_activa', 'false');
+        localStorage.removeItem('churo_carrito');
+        localStorage.setItem('churo_ultima_mesa', mesaActual);
+        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
+        localStorage.removeItem('churo_fecha_inicio');
+        // Mantén churo_celular para pre-llenar la próxima vez
+      } catch (stErr) {
+        console.warn("Storage update error on payment:", stErr);
+      }
+      setCart([]);
+
       // Limpiar llamadas de mozo de esta mesa
       waiterCalls.filter(c => c.tableId === tableObj.id).forEach(c => attendWaiterCall(c.id));
       setTables(prev => prev.map(t => t.id === tableObj.id ? { ...t, status: 'free', currentOrder: null } : t));
@@ -907,6 +984,17 @@ export default function App() {
       showToast(`¡Pago con ${method} confirmado! Mesa #${tableObj.id} cobrada y liberada. ✨`);
     } catch (e) {
       console.error("Error al registrar pago y liberar mesa:", e);
+      try {
+        const mesaActual = String(tableObj.id);
+        localStorage.setItem('churo_sesion_activa', 'false');
+        localStorage.removeItem('churo_carrito');
+        localStorage.setItem('churo_ultima_mesa', mesaActual);
+        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
+        localStorage.removeItem('churo_fecha_inicio');
+      } catch {
+        // ignore
+      }
+      setCart([]);
       setTables(prev => prev.map(t => t.id === tableObj.id ? { ...t, status: 'free', currentOrder: null } : t));
       setCustomerModalOpen(false);
       setCashAmount('');
@@ -941,10 +1029,34 @@ export default function App() {
         status: 'free',
         currentOrder: null
       });
+
+      // Evento de pago y liberación de sesión: BEST PRACTICE
+      try {
+        const mesaActual = String(tableId);
+        localStorage.setItem('churo_sesion_activa', 'false');
+        localStorage.removeItem('churo_carrito');
+        localStorage.setItem('churo_ultima_mesa', mesaActual);
+        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
+        localStorage.removeItem('churo_fecha_inicio');
+      } catch (stErr) {
+        console.warn("Storage update error on table liberation:", stErr);
+      }
+      setCart([]);
+
       setTables(prev => prev.map(t => t.id === tableId ? { ...t, status: 'free', currentOrder: null } : t));
       showToast(`Mesa #${tableId} cobrada y liberada con éxito.`);
     } catch (e) {
       console.error("Error al liberar mesa:", e);
+      try {
+        const mesaActual = String(tableId);
+        localStorage.setItem('churo_sesion_activa', 'false');
+        localStorage.removeItem('churo_carrito');
+        localStorage.setItem('churo_ultima_mesa', mesaActual);
+        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
+      } catch {
+        // ignore
+      }
+      setCart([]);
       setTables(prev => prev.map(t => t.id === tableId ? { ...t, status: 'free', currentOrder: null } : t));
       showToast(`Mesa #${tableId} liberada.`);
     }

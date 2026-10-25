@@ -64,6 +64,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
       localStorage.setItem('churo_celular', cleanCelular);
       localStorage.setItem('churo_mesa', String(mesaNumber));
       localStorage.setItem('churo_fecha', new Date().toISOString());
+      localStorage.setItem('churo_fecha_inicio', new Date().toISOString());
       sessionStorage.setItem(`welcome_done_${mesaNumber}`, 'true');
       sessionStorage.setItem(`churo_welcome_dismissed_${mesaNumber}`, 'true');
 
