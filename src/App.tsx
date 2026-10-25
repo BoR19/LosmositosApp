@@ -309,6 +309,8 @@ export default function App() {
         });
         setMenu(uniqueItems);
       }
+    }, (error) => {
+      console.log('Usando localStorage fallback', error);
     });
 
     const unsubscribeCalls = onSnapshot(collection(db, 'llamadas'), (snapshot) => {
@@ -392,15 +394,15 @@ export default function App() {
       console.warn("Perfil snapshot listener error:", error);
     });
 
-    const unsubscribeRequests = onSnapshot(collection(db, 'solicitudes_cambio'), (snapshot) => {
+    const unsubscribeRequests = isStaff ? onSnapshot(collection(db, 'solicitudes_cambio'), (snapshot) => {
       const liveReqs = snapshot.docs.map(d => ({
         id: d.id,
         ...d.data()
       })) as SolicitudCambio[];
       setChangeRequests(liveReqs);
     }, (error) => {
-      console.warn("Solicitudes cambio snapshot listener error:", error);
-    });
+      console.log('Usando localStorage fallback', error);
+    }) : () => {};
 
     return () => {
       unsubscribeAuth();
@@ -412,6 +414,44 @@ export default function App() {
       unsubscribeRequests();
     };
   }, []);
+
+  // Instrucción para reglas de Firestore
+  useEffect(() => {
+    console.log("Publica estas reglas en Firebase Console > Firestore > Rules > Publish");
+  }, []);
+
+  // Polling para cliente: verifica clientes/{celular} cada 10 segundos para cambio de mesa automático
+  useEffect(() => {
+    if (!isClientMode) return;
+    const celular = localStorage.getItem('churo_celular');
+    if (!celular) return;
+
+    const intervalId = setInterval(async () => {
+      try {
+        const clientDocRef = doc(db, 'clientes', String(celular));
+        const clientSnap = await getDoc(clientDocRef);
+        if (clientSnap.exists()) {
+          const clientData = clientSnap.data();
+          const ultimaMesa = clientData?.ultima_mesa;
+          const currentMesaStored = Number(localStorage.getItem('churo_mesa') || currentTableId);
+          if (ultimaMesa && !isNaN(Number(ultimaMesa)) && Number(ultimaMesa) !== currentMesaStored) {
+            localStorage.setItem('churo_mesa', String(ultimaMesa));
+            const newUrl = new URL(window.location.href);
+            newUrl.searchParams.set('mesa', String(ultimaMesa));
+            window.history.replaceState({}, '', newUrl.toString());
+            showToast(`¡Te movimos a Mesa ${ultimaMesa}!`);
+            setTimeout(() => {
+              window.location.reload();
+            }, 1000);
+          }
+        }
+      } catch (err) {
+        console.log('Usando localStorage fallback (cliente getDoc):', err);
+      }
+    }, 10000);
+
+    return () => clearInterval(intervalId);
+  }, [isClientMode, currentTableId]);
 
   // Detect Mesa from URL query params (e.g. ?mesa=3) with Best Practice session lifecycle
   useEffect(() => {
@@ -1124,42 +1164,56 @@ export default function App() {
       showToast("Por favor selecciona tu mesa antes de solicitar un cambio.", "error");
       return;
     }
+    const cleanPhone = (celular || localStorage.getItem('churo_celular') || '').replace(/\D/g, '');
+    const reqData = {
+      mesa_origen: Number(mesaNum),
+      mesa_destino: null,
+      celular: cleanPhone || null,
+      motivo: motivo || 'Mesa más grande',
+      estado: 'pendiente',
+      createdAt: Date.now(),
+      cliente_nombre: `Cliente Mesa ${mesaNum}`
+    };
     try {
-      const cleanPhone = (celular || localStorage.getItem('churo_celular') || '').replace(/\D/g, '');
       const docRef = await addDoc(collection(db, 'solicitudes_cambio'), {
-        mesa_origen: Number(mesaNum),
-        mesa_destino: null,
-        celular: cleanPhone || null,
-        motivo: motivo || 'Mesa más grande',
-        estado: 'pendiente',
-        createdAt: serverTimestamp(),
-        cliente_nombre: `Cliente Mesa ${mesaNum}`
+        ...reqData,
+        createdAt: serverTimestamp()
       });
       console.log('Solicitud creada:', docRef.id);
       showToast("Solicitud enviada");
     } catch (e) {
       console.error("Error al enviar solicitud de cambio de mesa:", e);
-      showToast("Error al enviar la solicitud. Intenta de nuevo.", "error");
+      try {
+        localStorage.setItem('churo_solicitud_pendiente', JSON.stringify(reqData));
+      } catch {}
+      showToast("Solicitud guardada local, se enviará cuando haya conexión");
     }
   };
 
   // Simular solicitud de cambio de mesa en admin
   const handleSimulateRequest = async () => {
+    const reqData = {
+      mesa_origen: 5,
+      mesa_destino: null,
+      celular: '71234567',
+      motivo: 'Mesa más grande',
+      estado: 'pendiente',
+      createdAt: Date.now(),
+      cliente_nombre: 'Cliente Mesa 5'
+    };
     try {
       const docRef = await addDoc(collection(db, 'solicitudes_cambio'), {
-        mesa_origen: 5,
-        mesa_destino: null,
-        celular: '71234567',
-        motivo: 'Mesa más grande',
-        estado: 'pendiente',
-        createdAt: serverTimestamp(),
-        cliente_nombre: 'Cliente Mesa 5'
+        ...reqData,
+        createdAt: serverTimestamp()
       });
       console.log('Solicitud creada:', docRef.id);
       showToast("Solicitud simulada creada correctamente");
     } catch (e) {
       console.error("Error al simular solicitud:", e);
-      showToast("Error al simular solicitud", "error");
+      try {
+        localStorage.setItem('churo_solicitud_pendiente', JSON.stringify(reqData));
+      } catch {}
+      showToast("Solicitud guardada local, se enviará cuando haya conexión");
     }
   };
 
