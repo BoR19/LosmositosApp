@@ -27,6 +27,7 @@ interface CartModalProps {
   setCashAmount: (val: string) => void;
   onViewMenu: () => void;
   onSwitchToBill?: () => void;
+  isClientMode?: boolean;
   isStaffAuthenticated?: boolean;
   staffName?: string;
   onStaffLoginSuccess?: (session: any) => void;
@@ -51,6 +52,7 @@ export const CartModal: React.FC<CartModalProps> = ({
   setCashAmount,
   onViewMenu,
   onSwitchToBill,
+  isClientMode: propIsClientMode,
   isStaffAuthenticated = false,
   staffName = 'Personal',
   onStaffLoginSuccess,
@@ -58,6 +60,26 @@ export const CartModal: React.FC<CartModalProps> = ({
 }) => {
   // Method tab for billing view ('EFECTIVO' | 'QR')
   const [billMethod, setBillMethod] = useState<'EFECTIVO' | 'QR'>('EFECTIVO');
+
+  // Detect staff vs client mode
+  const mesaQR = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('mesa') : null;
+  const isStaff = isStaffAuthenticated || 
+    (typeof localStorage !== 'undefined' && (
+      localStorage.getItem('admin_role') === 'mozo' || 
+      localStorage.getItem('admin_role') === 'admin' || 
+      localStorage.getItem('admin_role') === 'cajero' ||
+      localStorage.getItem('churo_role') === 'staff'
+    )) ||
+    (typeof window !== 'undefined' && (
+      window.location.pathname.includes('/admin') || 
+      window.location.pathname.includes('/mesas')
+    ));
+  const isClient = propIsClientMode !== undefined 
+    ? propIsClientMode 
+    : Boolean(!isStaff && (mesaQR || (typeof localStorage !== 'undefined' && localStorage.getItem('churo_mesa'))));
+  const effectiveMesaQR = (typeof localStorage !== 'undefined' ? localStorage.getItem('churo_mesa') : null) || mesaQR || currentTableId;
+  const effectiveTableNumber = isClient ? (Number(effectiveMesaQR) || currentTableId) : currentTableId;
+
   
   // Rule 2: QR verification in mobile banking by staff
   const [qrVerified, setQrVerified] = useState<boolean>(false);
@@ -77,7 +99,8 @@ export const CartModal: React.FC<CartModalProps> = ({
 
   // Cargar número de celular del cliente (localStorage o Firestore mesas_activas)
   useEffect(() => {
-    if (isOpen && modalMode === 'bill' && currentTableId !== null) {
+    const targetMesaId = isClient ? (Number(effectiveMesaQR) || currentTableId) : currentTableId;
+    if (isOpen && modalMode === 'bill' && targetMesaId !== null) {
       const savedPhone = localStorage.getItem('churo_celular') || '';
       if (savedPhone) {
         setClienteCelular(savedPhone);
@@ -85,7 +108,7 @@ export const CartModal: React.FC<CartModalProps> = ({
       } else {
         const fetchMesaCelular = async () => {
           try {
-            const ref = doc(db, 'mesas_activas', `mesa_${currentTableId}`);
+            const ref = doc(db, 'mesas_activas', `mesa_${targetMesaId}`);
             const snap = await getDoc(ref);
             if (snap.exists() && snap.data().cliente_celular) {
               const phone = snap.data().cliente_celular;
@@ -102,7 +125,7 @@ export const CartModal: React.FC<CartModalProps> = ({
         fetchMesaCelular();
       }
     }
-  }, [isOpen, modalMode, currentTableId]);
+  }, [isOpen, modalMode, currentTableId, isClient, effectiveMesaQR]);
 
   // Close on Escape key & manage scroll lock
   useEffect(() => {
@@ -127,7 +150,7 @@ export const CartModal: React.FC<CartModalProps> = ({
 
   if (!isOpen) return null;
 
-  const currentTable = currentTableId !== null ? tables.find(t => t.id === Number(currentTableId)) || null : null;
+  const currentTable = effectiveTableNumber !== null ? tables.find(t => t.id === Number(effectiveTableNumber)) || null : null;
   const isAdditionMode = Boolean(activeOrder && modalMode === 'cart');
   
   // Safe order fallback
@@ -135,6 +158,7 @@ export const CartModal: React.FC<CartModalProps> = ({
   const itemsToShow = modalMode === 'bill' ? (effectiveOrder?.items || []) : cart;
   const totalToShow = modalMode === 'bill' ? (effectiveOrder?.total || 0) : cartTotal;
   const totalItemsCount = cart.reduce((sum, item) => sum + item.qty, 0);
+
 
   // =========================================================================
   // 💰 REGLA 1: LÓGICA DE PAGO EN EFECTIVO (Cálculo y Validación Dinámica)
@@ -188,7 +212,7 @@ export const CartModal: React.FC<CartModalProps> = ({
       onPayment(billMethod);
 
       // c) Generar texto limpio de recibo
-      const mesaName = currentTable ? currentTable.name : `Mesa #${currentTableId}`;
+      const mesaName = currentTable ? currentTable.name : `Mesa #${effectiveTableNumber}`;
       const fechaStr = new Date().toLocaleString('es-BO', { 
         dateStyle: 'short', 
         timeStyle: 'short' 
@@ -226,7 +250,7 @@ Gastronomía de Altura • Tarija`;
         console.log('Imprimir ticket 80mm:', textoRecibo);
         try {
           await addDoc(collection(db, 'print_queue'), {
-            mesa: currentTableId,
+            mesa: effectiveTableNumber,
             tableName: mesaName,
             textoRecibo,
             total: totalToShow,
@@ -241,7 +265,7 @@ Gastronomía de Altura • Tarija`;
       // f) Guarda en Firestore tickets_history
       try {
         await addDoc(collection(db, 'tickets_history'), {
-          mesa: currentTableId,
+          mesa: effectiveTableNumber,
           tableName: mesaName,
           total: totalToShow,
           celular: clienteCelular || null,
@@ -315,31 +339,44 @@ Gastronomía de Altura • Tarija`;
 
         {/* Scrollable Content Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 min-h-0 overscroll-contain">
-          {/* Table Selector Box inside Cart so user can switch table easily */}
-          <div className={`p-3 rounded-xl border flex items-center justify-between text-xs transition-colors ${
-            currentTableId === null ? 'bg-amber-950/30 border-amber-500/50' : 'bg-[#292524] border-[#3a3632]'
-          }`}>
-            <span className="text-[#a8a29e] font-medium flex items-center gap-1.5">
-              <span>Mesa:</span>
-              {currentTableId === null && (
-                <span className="text-amber-400 font-bold text-[10px]">(Requerida para cobrar/pedir)</span>
-              )}
-            </span>
-            <select
-              value={currentTableId ?? ''}
-              onChange={(e) => onTableChange(Number(e.target.value))}
-              className="bg-[#1c1917] text-[#ff7a00] font-bold border border-[#3a3632] rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-[#ff7a00] cursor-pointer"
-            >
-              <option value="" disabled className="bg-[#1c1917] text-stone-400">
-                -- Selecciona tu Mesa --
-              </option>
-              {tables.map(t => (
-                <option key={t.id} value={t.id}>
-                  {formatTableOptionLabel(t)}
+          {/* Table Selector Box inside Cart: Locked badge in client mode, Select dropdown in staff mode */}
+          {isClient ? (
+            <div className="p-3.5 rounded-xl border border-[#ff7a00]/30 bg-[#292524] flex items-center justify-between text-xs shadow-sm">
+              <span className="text-[#a8a29e] font-medium flex items-center gap-1.5">
+                <span>Tu Mesa:</span>
+              </span>
+              <div className="flex items-center gap-2 bg-[#1c1917] border border-[#ff7a00]/40 px-3 py-1.5 rounded-lg font-bold text-[#ff7a00] shadow-sm">
+                <span>{currentTable ? currentTable.name : `Mesa ${effectiveMesaQR}`} - Salón Central</span>
+                <span title="Mesa fijada por QR">🔒</span>
+              </div>
+            </div>
+          ) : (
+            <div className={`p-3 rounded-xl border flex items-center justify-between text-xs transition-colors ${
+              currentTableId === null ? 'bg-amber-950/30 border-amber-500/50' : 'bg-[#292524] border-[#3a3632]'
+            }`}>
+              <span className="text-[#a8a29e] font-medium flex items-center gap-1.5">
+                <span>Mesa:</span>
+                {currentTableId === null && (
+                  <span className="text-amber-400 font-bold text-[10px]">(Requerida para cobrar/pedir)</span>
+                )}
+              </span>
+              <select
+                value={currentTableId ?? ''}
+                onChange={(e) => onTableChange(Number(e.target.value))}
+                className="bg-[#1c1917] text-[#ff7a00] font-bold border border-[#3a3632] rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-[#ff7a00] cursor-pointer"
+              >
+                <option value="" disabled className="bg-[#1c1917] text-stone-400">
+                  -- Selecciona la Mesa --
                 </option>
-              ))}
-            </select>
-          </div>
+                {tables.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {formatTableOptionLabel(t)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
 
           {/* Active Order Notice if table has an active comanda */}
           {activeOrder && modalMode === 'cart' && (

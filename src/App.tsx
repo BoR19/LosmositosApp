@@ -43,13 +43,65 @@ export default function App() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [menu, setMenu] = useState<MenuItem[]>(INITIAL_MENU);
   const [tables, setTables] = useState<Table[]>(INITIAL_TABLES);
-  
+
+  // 1. Detección de Modo Cliente vs Modo Staff
+  const mesaQR = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const m = params.get('mesa');
+      return m && !isNaN(Number(m)) ? Number(m) : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const isStaff = Boolean(
+    user || 
+    staffSession || 
+    (typeof localStorage !== 'undefined' && (
+      localStorage.getItem('admin_role') === 'mozo' || 
+      localStorage.getItem('admin_role') === 'admin' || 
+      localStorage.getItem('admin_role') === 'cajero' ||
+      localStorage.getItem('churo_role') === 'staff'
+    )) ||
+    (typeof window !== 'undefined' && (
+      window.location.pathname.includes('/admin') || 
+      window.location.pathname.includes('/mesas')
+    ))
+  );
+
+  const isClientMode = Boolean(
+    (mesaQR !== null || (typeof localStorage !== 'undefined' && Boolean(localStorage.getItem('churo_mesa')))) && 
+    !isStaff
+  );
+
   // UI & Interaction States
-  // Initialize from ?mesa= query parameter if scanned, otherwise null (requiring table selection or QR scan)
+  // Initialize from ?mesa= query parameter or locked customer table
   const [currentTableId, setCurrentTableId] = useState<number | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const mesaParam = params.get('mesa');
+      const savedMesa = typeof localStorage !== 'undefined' ? localStorage.getItem('churo_mesa') : null;
+
+      const isStaffInitial = Boolean(
+        (typeof localStorage !== 'undefined' && (
+          localStorage.getItem('admin_role') === 'mozo' || 
+          localStorage.getItem('admin_role') === 'admin' || 
+          localStorage.getItem('admin_role') === 'cajero' ||
+          localStorage.getItem('elchuro_staff_session') ||
+          localStorage.getItem('churo_role') === 'staff'
+        )) ||
+        (typeof window !== 'undefined' && (
+          window.location.pathname.includes('/admin') || 
+          window.location.pathname.includes('/mesas')
+        ))
+      );
+
+      // Si es cliente y ya tiene mesa fijada en su dispositivo, respetarla siempre
+      if (!isStaffInitial && savedMesa && !isNaN(Number(savedMesa))) {
+        return Number(savedMesa);
+      }
+
       if (mesaParam && !isNaN(Number(mesaParam))) {
         return Number(mesaParam);
       }
@@ -58,6 +110,7 @@ export default function App() {
     }
     return null;
   });
+
   const [customerModalOpen, setCustomerModalOpen] = useState<boolean>(false);
   const [modalMode, setModalMode] = useState<'cart' | 'bill'>('cart');
   const [cashAmount, setCashAmount] = useState<string>('');
@@ -287,25 +340,71 @@ export default function App() {
     };
   }, []);
 
-  // Detect Mesa from URL query params (e.g. ?mesa=3)
+  // Detect Mesa from URL query params (e.g. ?mesa=3) with strict client mode lock & anti-tampering
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const mesaParam = params.get('mesa');
-    if (mesaParam && !isNaN(Number(mesaParam))) {
-      const tableId = Number(mesaParam);
-      setCurrentTableId(tableId);
-
-      const mesaNumStr = String(tableId);
-      const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${mesaNumStr}`) === 'true' || 
-                                 sessionStorage.getItem(`churo_welcome_dismissed_${mesaNumStr}`) === 'true';
-      const savedPhone = localStorage.getItem('churo_celular');
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlMesa = params.get('mesa');
       const savedMesa = localStorage.getItem('churo_mesa');
 
-      if (!welcomeDoneSession && !(savedPhone && savedMesa === mesaNumStr)) {
-        setShowWelcomeScreen(true);
+      // Sync role in localStorage
+      if (isStaff) {
+        localStorage.setItem('churo_role', 'staff');
+      } else if (isClientMode) {
+        localStorage.setItem('churo_role', 'cliente');
+      }
+
+      if (urlMesa && !isNaN(Number(urlMesa))) {
+        const urlMesaNum = Number(urlMesa);
+
+        // Si es cliente y ya tenía una mesa guardada que no coincide con la URL:
+        if (isClientMode && savedMesa && Number(savedMesa) !== urlMesaNum) {
+          // Bloquear manipulación de URL y forzar mesa original
+          setCurrentTableId(Number(savedMesa));
+          const newUrl = new URL(window.location.href);
+          newUrl.searchParams.set('mesa', savedMesa);
+          window.history.replaceState({}, '', newUrl.toString());
+          showToast(`Tu mesa asignada es la Mesa ${savedMesa}. No puedes cambiar a la Mesa ${urlMesaNum}.`, 'error');
+          return;
+        }
+
+        // Asignar mesa de forma segura
+        setCurrentTableId(urlMesaNum);
+        if (isClientMode && !savedMesa) {
+          localStorage.setItem('churo_mesa', String(urlMesaNum));
+        }
+
+        const mesaNumStr = String(urlMesaNum);
+        const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${mesaNumStr}`) === 'true' || 
+                                   sessionStorage.getItem(`churo_welcome_dismissed_${mesaNumStr}`) === 'true';
+        const savedPhone = localStorage.getItem('churo_celular');
+
+        if (!welcomeDoneSession && !(savedPhone && savedMesa === mesaNumStr)) {
+          setShowWelcomeScreen(true);
+        }
+      } else if (isClientMode && savedMesa && !isNaN(Number(savedMesa))) {
+        setCurrentTableId(Number(savedMesa));
+        const newUrl = new URL(window.location.href);
+        newUrl.searchParams.set('mesa', savedMesa);
+        window.history.replaceState({}, '', newUrl.toString());
+      }
+    } catch (e) {
+      console.warn("Error en detección y blindaje de mesa:", e);
+    }
+  }, [isClientMode, isStaff]);
+
+  // Bloquear cambio de mesa si es cliente
+  const handleTableChange = (tableId: number) => {
+    if (isClientMode) {
+      const lockedMesa = localStorage.getItem('churo_mesa') || mesaQR;
+      if (lockedMesa && Number(lockedMesa) !== tableId) {
+        showToast(`Tu mesa es la Mesa ${lockedMesa}. Solo el personal puede cambiar de mesa.`, 'error');
+        return;
       }
     }
-  }, []);
+    setCurrentTableId(tableId);
+  };
+
 
 
   // Active Order for Current Selected Table
@@ -357,19 +456,28 @@ export default function App() {
   const placeOrder = async () => {
     if (cart.length === 0) return;
     
-    // Check if table is assigned
-    if (currentTableId === null) {
+    // Check if table is assigned (locked to client mesa if in client mode)
+    let effectiveMesaId = currentTableId;
+    if (isClientMode) {
+      const lockedMesa = localStorage.getItem('churo_mesa') || mesaQR;
+      if (lockedMesa && !isNaN(Number(lockedMesa))) {
+        effectiveMesaId = Number(lockedMesa);
+      }
+    }
+
+    if (effectiveMesaId === null) {
       showToast("Por favor selecciona tu número de mesa para enviar el pedido.", "error");
       setModalMode('cart');
       setCustomerModalOpen(true);
       return;
     }
 
-    const tableObj = tables.find(t => t.id === Number(currentTableId));
+    const tableObj = tables.find(t => t.id === Number(effectiveMesaId));
     if (!tableObj) {
       showToast("Mesa no válida. Por favor selecciona tu mesa.", "error");
       return;
     }
+
     
     // Check if table already has an active order in progress
     const existingOrder = orders.find(
@@ -584,6 +692,14 @@ export default function App() {
   }, [uniqueMenu, adminMenuSearch, adminMenuCategory]);
 
   const callWaiter = async (table: Table) => {
+    if (isClientMode) {
+      const lockedMesa = localStorage.getItem('churo_mesa') || mesaQR;
+      if (lockedMesa && table.id !== Number(lockedMesa)) {
+        showToast(`Solo puedes llamar al mozo para tu Mesa ${lockedMesa}`, 'error');
+        return;
+      }
+    }
+
     const callData: WaiterCall = {
       id: `CALL-${Date.now()}`,
       tableId: table.id,
@@ -618,6 +734,14 @@ export default function App() {
   };
 
   const requestBill = async (table: Table) => {
+    if (isClientMode) {
+      const lockedMesa = localStorage.getItem('churo_mesa') || mesaQR;
+      if (lockedMesa && table.id !== Number(lockedMesa)) {
+        showToast(`Solo puedes pedir la cuenta de tu Mesa ${lockedMesa}`, 'error');
+        return;
+      }
+    }
+
     const callData: WaiterCall = {
       id: `CALL-${Date.now()}`,
       tableId: table.id,
@@ -627,6 +751,7 @@ export default function App() {
       createdAt: Date.now(),
       status: 'pendiente'
     };
+
 
     setWaiterCalls(prev => {
       const exists = prev.some(c => c.tableId === table.id && c.type === 'cuenta' && c.status === 'pendiente');
@@ -1164,35 +1289,46 @@ export default function App() {
                   Escanea el código QR de tu mesa, agrega tus platos al carrito y envíalos a cocina sin demoras.
                 </p>
                 <div className="pt-2 flex flex-wrap gap-2.5 items-center">
-                  <div className={`flex items-center gap-2 border rounded-xl px-3 py-2 transition-colors ${
-                    currentTableId === null ? 'bg-amber-950/40 border-amber-500/60' : 'bg-[#1c1917] border-[#3a3632]'
-                  }`}>
-                    <span className="text-xs text-[#a8a29e]">Mesa:</span>
-                    <select 
-                      value={currentTableId ?? ''}
-                      onChange={(e) => {
-                        const val = e.target.value ? Number(e.target.value) : null;
-                        setCurrentTableId(val);
-                      }}
-                      className="bg-transparent text-sm font-bold text-[#ff7a00] focus:outline-none cursor-pointer"
-                    >
-                      <option value="" disabled className="bg-[#1c1917] text-stone-400">
-                        -- Seleccionar Mesa --
-                      </option>
-                      {tables.map(t => (
-                        <option key={`table-option-${t.id}`} value={t.id} className="bg-[#1c1917] text-white">
-                          {formatTableOptionLabel(t)}
+                  {isClientMode ? (
+                    <div className="flex items-center gap-2 border border-[#ff7a00]/40 bg-[#1c1917] rounded-xl px-3.5 py-2 text-xs font-bold text-[#ff7a00] shadow-sm">
+                      <Lock className="w-3.5 h-3.5 text-[#ff7a00]" />
+                      <span>{tables.find(t => t.id === currentTableId)?.name || `Mesa ${currentTableId}`} - Salón Central</span>
+                      <span className="text-[10px] text-[#a8a29e] font-normal" title="Mesa asignada por QR bloqueada">🔒</span>
+                    </div>
+                  ) : (
+                    <div className={`flex items-center gap-2 border rounded-xl px-3 py-2 transition-colors ${
+                      currentTableId === null ? 'bg-amber-950/40 border-amber-500/60' : 'bg-[#1c1917] border-[#3a3632]'
+                    }`}>
+                      <span className="text-xs text-[#a8a29e]">Mesa:</span>
+                      <select 
+                        value={currentTableId ?? ''}
+                        onChange={(e) => {
+                          const val = e.target.value ? Number(e.target.value) : null;
+                          handleTableChange(val as number);
+                        }}
+                        className="bg-transparent text-sm font-bold text-[#ff7a00] focus:outline-none cursor-pointer"
+                      >
+                        <option value="" disabled className="bg-[#1c1917] text-stone-400">
+                          -- Seleccionar Mesa --
                         </option>
-                      ))}
-                    </select>
-                  </div>
+                        {tables.map(t => (
+                          <option key={`table-option-${t.id}`} value={t.id} className="bg-[#1c1917] text-white">
+                            {formatTableOptionLabel(t)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <button 
                     onClick={() => {
-                      if (currentTableId === null) {
+                      const effectiveId = isClientMode 
+                        ? (Number(localStorage.getItem('churo_mesa')) || mesaQR || currentTableId)
+                        : currentTableId;
+                      if (effectiveId === null) {
                         showToast("Por favor selecciona tu mesa antes de llamar al mozo.", "error");
                         return;
                       }
-                      const table = tables.find(t => t.id === Number(currentTableId));
+                      const table = tables.find(t => t.id === Number(effectiveId));
                       if (table) callWaiter(table);
                     }}
                     className="px-3.5 py-2 rounded-xl bg-[#3a3632] hover:bg-[#ff7a00] text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer"
@@ -1201,11 +1337,14 @@ export default function App() {
                   </button>
                   <button 
                     onClick={() => {
-                      if (currentTableId === null) {
+                      const effectiveId = isClientMode 
+                        ? (Number(localStorage.getItem('churo_mesa')) || mesaQR || currentTableId)
+                        : currentTableId;
+                      if (effectiveId === null) {
                         showToast("Por favor selecciona tu mesa para pedir la cuenta.", "error");
                         return;
                       }
-                      const table = tables.find(t => t.id === Number(currentTableId));
+                      const table = tables.find(t => t.id === Number(effectiveId));
                       if (table) requestBill(table);
                     }}
                     className="px-3.5 py-2 rounded-xl bg-[#3a3632] hover:bg-emerald-600 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer"
@@ -1914,7 +2053,7 @@ export default function App() {
         tables={tables}
         currentTableId={currentTableId}
         activeOrder={activeOrderForCurrentTable}
-        onTableChange={(id) => setCurrentTableId(id)}
+        onTableChange={handleTableChange}
         onUpdateQty={updateCartQty}
         onRemoveItem={removeFromCart}
         onPlaceOrder={placeOrder}
@@ -1923,17 +2062,22 @@ export default function App() {
         setCashAmount={setCashAmount}
         onViewMenu={() => setActiveTab('menu')}
         onSwitchToBill={() => {
-          const table = currentTableId !== null ? tables.find(t => t.id === Number(currentTableId)) : null;
+          const effectiveId = isClientMode 
+            ? (Number(localStorage.getItem('churo_mesa')) || mesaQR || currentTableId)
+            : currentTableId;
+          const table = effectiveId !== null ? tables.find(t => t.id === Number(effectiveId)) : null;
           if (table) {
             requestBill(table);
           } else {
             setModalMode('bill');
           }
         }}
+        isClientMode={isClientMode}
         isStaffAuthenticated={isStaffAuthenticated}
         staffName={user?.displayName || staffSession?.name || 'Personal'}
         onStaffLoginSuccess={(session) => setStaffSession(session)}
         onCallWaiterForBill={handleCallWaiterForBill}
+
       />
 
       {/* Floating Mobile Cart Bar (Hides when Cart Modal is Open) */}
