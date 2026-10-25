@@ -4,5 +4,10 @@ dist/
 coverage/
 .DS_Store
 *.log
+firebase-applet-config.json
+.env.local
+.env
 .env*
 !.env.example
+*.key.json
+

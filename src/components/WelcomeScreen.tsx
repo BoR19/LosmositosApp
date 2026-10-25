@@ -60,10 +60,12 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
     setIsSubmitting(true);
 
     try {
-      // a) Save in localStorage
+      // a) Save in localStorage and sessionStorage
       localStorage.setItem('churo_celular', cleanCelular);
       localStorage.setItem('churo_mesa', String(mesaNumber));
       localStorage.setItem('churo_fecha', new Date().toISOString());
+      sessionStorage.setItem(`welcome_done_${mesaNumber}`, 'true');
+      sessionStorage.setItem(`churo_welcome_dismissed_${mesaNumber}`, 'true');
 
       // b) Save in Firestore (clientes doc=cleanCelular & mesas_activas doc=mesa_X)
       const nowIso = new Date().toISOString();
@@ -103,6 +105,8 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   const handleSkip = () => {
     try {
       localStorage.setItem('churo_mesa', String(mesaNumber));
+      sessionStorage.setItem(`welcome_done_${mesaNumber}`, 'true');
+      sessionStorage.setItem(`churo_welcome_dismissed_${mesaNumber}`, 'true');
     } catch (e) {
       // ignore
     }

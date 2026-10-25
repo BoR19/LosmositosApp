@@ -94,6 +94,15 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       const mesaParam = params.get('mesa');
       if (mesaParam && !isNaN(Number(mesaParam))) {
+        const mesaNumStr = String(mesaParam);
+        const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${mesaNumStr}`) === 'true' || 
+                                   sessionStorage.getItem(`churo_welcome_dismissed_${mesaNumStr}`) === 'true';
+        const savedPhone = localStorage.getItem('churo_celular');
+        const savedMesa = localStorage.getItem('churo_mesa');
+
+        if (welcomeDoneSession || (savedPhone && savedMesa === mesaNumStr)) {
+          return false;
+        }
         return true;
       }
     } catch {
@@ -101,6 +110,7 @@ export default function App() {
     }
     return false;
   });
+
 
   // Show Toast Helper
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
@@ -284,9 +294,19 @@ export default function App() {
     if (mesaParam && !isNaN(Number(mesaParam))) {
       const tableId = Number(mesaParam);
       setCurrentTableId(tableId);
-      setShowWelcomeScreen(true);
+
+      const mesaNumStr = String(tableId);
+      const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${mesaNumStr}`) === 'true' || 
+                                 sessionStorage.getItem(`churo_welcome_dismissed_${mesaNumStr}`) === 'true';
+      const savedPhone = localStorage.getItem('churo_celular');
+      const savedMesa = localStorage.getItem('churo_mesa');
+
+      if (!welcomeDoneSession && !(savedPhone && savedMesa === mesaNumStr)) {
+        setShowWelcomeScreen(true);
+      }
     }
-  }, [tables]);
+  }, []);
+
 
   // Active Order for Current Selected Table
   const activeOrderForCurrentTable = useMemo(() => {
@@ -972,6 +992,7 @@ export default function App() {
           restaurantProfile={restaurantProfile}
           onComplete={(celular) => {
             try {
+              sessionStorage.setItem(`welcome_done_${currentTableId}`, 'true');
               sessionStorage.setItem(`churo_welcome_dismissed_${currentTableId}`, 'true');
             } catch {
               // ignore
