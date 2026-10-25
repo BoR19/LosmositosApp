@@ -1,0 +1,99 @@
+{
+  "entities": {
+    "Plato": {
+      "title": "Plato",
+      "description": "Un producto del menú.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nombre": { "type": "string" },
+        "precioBs": { "type": "number" },
+        "disponible": { "type": "boolean" },
+        "categoria": { "type": "string" }
+      },
+      "required": ["id", "nombre", "precioBs", "disponible", "categoria"]
+    },
+    "Pedido": {
+      "title": "Pedido",
+      "description": "Una comanda de mesa.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mesaId": { "type": "number" },
+        "status": { "type": "string", "enum": ["pendiente", "en-preparacion", "servido", "por-pagar"] },
+        "total": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "mesaId", "status", "total", "timestamp"]
+    },
+    "Llamada": {
+      "title": "Llamada",
+      "description": "Llamadas de mozo o solicitudes de cuenta de clientes.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "tableId": { "type": "number" },
+        "tableName": { "type": "string" },
+        "type": { "type": "string", "enum": ["mozo", "cuenta"] },
+        "time": { "type": "string" },
+        "status": { "type": "string", "enum": ["pendiente", "atendido"] },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["tableId", "tableName", "type", "time"]
+    },
+    "Mesa": {
+      "title": "Mesa",
+      "description": "Una mesa del restaurante.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string" },
+        "seats": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "name", "seats"]
+    },
+    "Configuracion": {
+      "title": "Configuracion",
+      "description": "Perfil del restaurante, identidad de marca, colores y logo.",
+      "type": "object",
+      "properties": {
+        "nombre": { "type": "string" },
+        "slogan": { "type": "string" },
+        "telefono": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "colorPrimario": { "type": "string" },
+        "colorSecundario": { "type": "string" },
+        "modoFondo": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/menu/{platoId}": {
+      "schema": "Plato",
+      "description": "Colección de productos del menú."
+    },
+    "/pedidos/{pedidoId}": {
+      "schema": "Pedido",
+      "description": "Colección de pedidos activos."
+    },
+    "/llamadas/{llamadaId}": {
+      "schema": "Llamada",
+      "description": "Colección de llamadas de mozo y pedidos de cuenta."
+    },
+    "/mesas/{mesaId}": {
+      "schema": "Mesa",
+      "description": "Colección de mesas del restaurante."
+    },
+    "/configuracion/{docId}": {
+      "schema": "Configuracion",
+      "description": "Configuración del restaurante e identidad de marca."
+    },
+    "/clientes/{clienteId}": {
+      "description": "Colección de clientes y WhatsApp capturados por QR."
+    },
+    "/mesas_activas/{mesaId}": {
+      "description": "Vinculación en tiempo real de cliente a mesa activa."
+    }
+  }
+}

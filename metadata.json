@@ -1,0 +1,6 @@
+{
+  "name": "El Churo Mosito",
+  "description": "Sistema de gestión de pedidos y administración para restaurante El Churo Mosito.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

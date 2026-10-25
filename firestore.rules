@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() { return request.auth != null; }
+    
+    // Colección Menu: Acceso público para lectura, autosembrado y gestión de disponibilidad
+    match /menu/{platoId} {
+      allow read, write: if true;
+    }
+
+    // Colección Pedidos: Los comensales en las mesas pueden enviar comandas libremente sin requerir inicio de sesión
+    match /pedidos/{pedidoId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if isSignedIn();
+    }
+
+    // Colección Llamadas: Solicitudes de mozo y cuenta en tiempo real desde las mesas para el panel de administración
+    match /llamadas/{llamadaId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Colección Mesas: Gestión de mesas, adición y eliminación
+    match /mesas/{mesaId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Colección Configuración: Perfil del Restaurante e Identidad de Marca
+    match /configuracion/{docId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Colección Clientes: Captura de clientes y WhatsApp al escanear QR
+    match /clientes/{clienteId} {
+      allow read, write: if true;
+    }
+
+    // Colección Mesas Activas: Vinculación de cliente a mesa activa
+    match /mesas_activas/{mesaId} {
+      allow read, write: if true;
+    }
+
+    // Colección Tickets History y cola de impresión
+    match /tickets_history/{ticketId} {
+      allow read, write: if true;
+    }
+
+    match /print_queue/{printId} {
+      allow read, write: if true;
+    }
+  }
+}
