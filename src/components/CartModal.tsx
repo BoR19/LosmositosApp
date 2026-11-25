@@ -12,6 +12,7 @@ import { authenticateStaffWithPin } from '../services/staffSecurityService.ts';
 
 interface CartModalProps {
   isOpen: boolean;
+  isDocked?: boolean;
   onClose: () => void;
   modalMode: 'cart' | 'bill';
   cart: CartItem[];
@@ -65,6 +66,7 @@ const ORDER_STATUS_LABEL: Record<string, { label: string; badgeClass: string }> 
 
 export const CartModal: React.FC<CartModalProps> = ({
   isOpen,
+  isDocked = false,
   onClose,
   modalMode,
   cart,
@@ -142,7 +144,7 @@ export const CartModal: React.FC<CartModalProps> = ({
   // Cargar número de celular del cliente (localStorage o Firestore mesas_activas)
   useEffect(() => {
     const targetMesaId = isClient ? (Number(effectiveMesaQR) || currentTableId) : currentTableId;
-    if (isOpen && modalMode === 'bill' && targetMesaId !== null) {
+    if ((isDocked || isOpen) && modalMode === 'bill' && targetMesaId !== null) {
       const savedPhone = localStorage.getItem('churo_celular') || '';
       if (savedPhone) {
         setClienteCelular(savedPhone);
@@ -167,28 +169,30 @@ export const CartModal: React.FC<CartModalProps> = ({
         fetchMesaCelular();
       }
     }
-  }, [isOpen, modalMode, currentTableId, isClient, effectiveMesaQR]);
+  }, [isOpen, isDocked, modalMode, currentTableId, isClient, effectiveMesaQR]);
 
-  // Close on Escape key & manage scroll lock
+  // Close on Escape key & manage scroll lock (solo en modo modal flotante, nunca en isDocked)
   useEffect(() => {
+    setQrVerified(false);
+    setWaiterRequested(false);
+    setShowInlinePin(false);
+    setInlinePin('');
+    setPinError(null);
+    setDiscountInput('');
+
+    if (isDocked || !isOpen) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
-    if (isOpen) {
-      window.addEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'hidden';
-      setQrVerified(false);
-      setWaiterRequested(false);
-      setShowInlinePin(false);
-      setInlinePin('');
-      setPinError(null);
-      setDiscountInput('');
-    }
+    window.addEventListener('keydown', handleKeyDown);
+    document.body.style.overflow = 'hidden';
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = 'unset';
     };
-  }, [isOpen, onClose]);
+  }, [isOpen, isDocked, onClose, currentTableId, modalMode]);
 
   const currentTable = useMemo(() => {
     if (effectiveTableNumber === null) return null;
@@ -216,7 +220,7 @@ export const CartModal: React.FC<CartModalProps> = ({
   const itemsToShow = modalMode === 'bill' ? (effectiveOrder?.items || []) : cart;
   const totalItemsCount = cart.reduce((sum, item) => sum + item.qty, 0);
 
-  if (!isOpen) return null;
+  if (!isDocked && !isOpen) return null;
 
   // =========================================================================
   // LÓGICA DE PAGO EN EFECTIVO (Cálculo y Validación Dinámica)
@@ -354,13 +358,14 @@ Gastronomía de Altura • Tarija`;
     ? (ORDER_STATUS_LABEL[effectiveOrder.status || 'pendiente'] || ORDER_STATUS_LABEL.pendiente)
     : null;
 
-  return (
-    <div className="fixed inset-0 z-[1200] bg-black/80 backdrop-blur-sm flex justify-end animate-fadeIn">
-      {/* Backdrop click to close */}
-      <div className="absolute inset-0" onClick={onClose} />
-
-      {/* Modal Container: fixed 100dvh for zero mobile overflow cut-off */}
-      <div className="relative w-full max-w-[520px] bg-[#1c1917] h-[100dvh] max-h-[100dvh] flex flex-col justify-between border-l border-[#3a3632] shadow-2xl z-10 overflow-hidden">
+  const panelContent = (
+    <div
+      className={
+        isDocked
+          ? 'w-full h-full bg-[#1c1917] flex flex-col justify-between border-l border-[#3a3632] overflow-hidden'
+          : 'relative w-full max-w-[520px] bg-[#1c1917] h-[100dvh] max-h-[100dvh] flex flex-col justify-between border-l border-[#3a3632] shadow-2xl z-10 overflow-hidden'
+      }
+    >
 
         {/* Header (Always Visible) */}
         <div className="shrink-0 p-4 sm:p-5 border-b border-[#3a3632] flex items-center justify-between bg-[#292524]">
@@ -398,17 +403,19 @@ Gastronomía de Altura • Tarija`;
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl bg-[#1c1917] hover:bg-[#3a3632] text-[#a8a29e] hover:text-white transition-colors cursor-pointer shrink-0"
-            aria-label="Cerrar"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {!isDocked && (
+            <button
+              onClick={onClose}
+              className="p-2 rounded-xl bg-[#1c1917] hover:bg-[#3a3632] text-[#a8a29e] hover:text-white transition-colors cursor-pointer shrink-0"
+              aria-label="Cerrar"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         {/* Scrollable Content Body */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 min-h-0 overscroll-contain">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 min-h-0 overscroll-contain pos-scrollbar">
           {/* Table Selector Box inside Cart: Locked badge in client mode, Select dropdown (combobox) in staff mode */}
           {isClient ? (
             <div className="p-3.5 rounded-xl border border-[#ff7a00]/30 bg-[#292524] space-y-2 shadow-sm">
@@ -523,7 +530,7 @@ Gastronomía de Altura • Tarija`;
               </div>
 
               {/* Listado de platos ya enviados a cocina */}
-              <div className="space-y-1.5 max-h-[210px] overflow-y-auto pr-1">
+              <div className="space-y-1.5 max-h-[210px] overflow-y-auto pr-1 pos-scrollbar">
                 {effectiveOrder.items.map((item, idx) => {
                   const orderItemId = 'orderItemId' in item ? item.orderItemId : undefined;
                   const isAddition = 'isAddition' in item ? Boolean(item.isAddition) : false;
@@ -746,7 +753,7 @@ Gastronomía de Altura • Tarija`;
                       ? 'Nuevos platos a adicionar:'
                       : 'Productos en tu Carrito:'}
                 </span>
-                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 pos-scrollbar">
                   {itemsToShow.map((item: any, index: number) => (
                     <div
                       key={item.orderItemId || (modalMode === 'cart' ? `cart-${item.id}` : `bill-${item.id}-${item.isAddition ? 'add' : 'base'}-${index}`)}
@@ -1251,6 +1258,17 @@ Gastronomía de Altura • Tarija`;
         )}
 
       </div>
+  );
+
+  if (isDocked) {
+    return panelContent;
+  }
+
+  return (
+    <div className="fixed inset-0 z-[1200] bg-black/80 backdrop-blur-sm flex justify-end animate-fadeIn">
+      {/* Backdrop click to close */}
+      <div className="absolute inset-0" onClick={onClose} />
+      {panelContent}
     </div>
   );
 };

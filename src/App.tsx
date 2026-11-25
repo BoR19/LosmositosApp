@@ -3,7 +3,7 @@ import {
   Utensils, QrCode, ShoppingBag, Clock, Sparkles, AlertCircle, 
   ChefHat, Layers, Award, Bell, FileText, CheckCheck, LogIn, LogOut, Lock,
   Plus, Trash2, Pencil, Search, DollarSign, Image as ImageIcon, SlidersHorizontal,
-  Building2, Home, ArrowRightLeft, Users
+  Building2, Home, ArrowRightLeft, Users, X
 } from 'lucide-react';
 import { db, auth, googleProvider } from './firebase.ts';
 import { collection, onSnapshot, addDoc, updateDoc, doc, setDoc, deleteDoc, getDoc, serverTimestamp } from 'firebase/firestore';
@@ -25,6 +25,7 @@ import { WelcomeScreen } from './components/WelcomeScreen.tsx';
 import { TicketHistoryAdmin } from './components/TicketHistoryAdmin.tsx';
 import { RequestTableChangeModal, MoveTableStaffModal, ClientConfirmMoveModal } from './components/TableChangeModals.tsx';
 import { EquipoYPermisos } from './components/EquipoYPermisos.tsx';
+import { PosSidebar } from './components/PosSidebar.tsx';
 import {
   subscribeSecurityConfig,
   subscribeCollaborators,
@@ -177,6 +178,12 @@ export default function App() {
   const [modalMode, setModalMode] = useState<'cart' | 'bill'>('cart');
   const [cashAmount, setCashAmount] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('TODOS');
+  const [posMenuSearch, setPosMenuSearch] = useState<string>('');
+  const [isDesktopViewport, setIsDesktopViewport] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(min-width: 1024px)').matches;
+  });
+  const isDesktopPos = Boolean(isStaffAuthenticated && isDesktopViewport);
   const [notification, setNotification] = useState<NotificationState | null>(null);
   const [qrModalTable, setQrModalTable] = useState<Table | null>(null);
   const [waiterCalls, setWaiterCalls] = useState<WaiterCall[]>([]);
@@ -587,7 +594,19 @@ export default function App() {
     canAccessReports,
   ]);
 
-  // Cerrar modales o drawers abiertos al cambiar de rol o de vista para evitar superposiciones
+  // Detectar viewport desktop (>= 1024px) para activar layout POS de 3 columnas solo en PC con personal autenticado
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(min-width: 1024px)');
+    const handleViewportChange = (e: MediaQueryListEvent) => {
+      setIsDesktopViewport(e.matches);
+    };
+    setIsDesktopViewport(mediaQuery.matches);
+    mediaQuery.addEventListener('change', handleViewportChange);
+    return () => mediaQuery.removeEventListener('change', handleViewportChange);
+  }, []);
+
+  // Cerrar modales o drawers abiertos al cambiar de rol, vista o entrar a POS desktop para evitar superposiciones
   useEffect(() => {
     setCustomerModalOpen(false);
     setQrModalTable(null);
@@ -598,7 +617,7 @@ export default function App() {
     setDishModalOpen(false);
     setDishToDelete(null);
     setDishToQuickPrice(null);
-  }, [activeTab, isStaffAuthenticated, isAdminAuthenticated]);
+  }, [activeTab, isStaffAuthenticated, isAdminAuthenticated, isDesktopPos]);
 
   // Polling para cliente: verifica clientes/{celular} cada 10 segundos para cambio de mesa automático
   useEffect(() => {
@@ -738,7 +757,9 @@ export default function App() {
     );
     setCashAmount('');
     setModalMode(openDirectlyInBill ? 'bill' : 'cart');
-    setCustomerModalOpen(true);
+    if (!isDesktopPos) {
+      setCustomerModalOpen(true);
+    }
   };
 
   const selectedTableObject = useMemo(() => {
@@ -825,7 +846,9 @@ export default function App() {
     if (effectiveMesaId === null) {
       showToast("Por favor selecciona tu número de mesa para enviar el pedido.", "error");
       setModalMode('cart');
-      setCustomerModalOpen(true);
+      if (!isDesktopPos) {
+        setCustomerModalOpen(true);
+      }
       return;
     }
 
@@ -1181,7 +1204,9 @@ export default function App() {
     }
 
     setModalMode('bill');
-    setCustomerModalOpen(true);
+    if (!isDesktopPos) {
+      setCustomerModalOpen(true);
+    }
     showToast(`Solicitud de cuenta registrada para ${table.name}. 🧾`);
   };
 
@@ -1717,12 +1742,32 @@ export default function App() {
     printWindow.document.close();
   };
 
-  // Filtered Menu
+  // Filtered Menu (incluye búsqueda en tiempo real para Modo POS Desktop)
   const categoriesWithAll = useMemo(() => ['TODOS', ...MENU_CATEGORIAS], []);
+  const searchedMenu = useMemo(() => {
+    if (!isDesktopPos || !posMenuSearch.trim()) return uniqueMenu;
+    const term = posMenuSearch.trim().toLowerCase();
+    return uniqueMenu.filter(
+      (item) =>
+        item.nombre.toLowerCase().includes(term) ||
+        item.categoria.toLowerCase().includes(term) ||
+        (item.descripcion || '').toLowerCase().includes(term)
+    );
+  }, [uniqueMenu, isDesktopPos, posMenuSearch]);
+
   const filteredMenu = useMemo(() => {
-    if (selectedCategory === 'TODOS') return uniqueMenu;
-    return uniqueMenu.filter(item => item.categoria === selectedCategory);
-  }, [uniqueMenu, selectedCategory]);
+    if (selectedCategory === 'TODOS') return searchedMenu;
+    return searchedMenu.filter(item => item.categoria === selectedCategory);
+  }, [searchedMenu, selectedCategory]);
+
+  const pendingKitchenCount = useMemo(() => {
+    return orders.filter(
+      (o) => o.status !== 'pagado' && o.status !== 'cancelado' && o.status !== 'servido'
+    ).length;
+  }, [orders]);
+
+  const staffDisplayName = user?.displayName || staffSession?.name || 'Administrador';
+  const staffRoleLabel = isAdminAuthenticated ? 'Administrador' : (staffSession?.cargo || 'Personal');
 
   const backgroundModeClass = useMemo(() => {
     switch (restaurantProfile.modoFondo) {
@@ -1737,7 +1782,7 @@ export default function App() {
   }, [restaurantProfile.modoFondo]);
 
   return (
-    <div className={`min-h-screen ${backgroundModeClass} text-[#f5efe6] font-sans antialiased selection:bg-[#ff7a00] selection:text-white overflow-x-hidden relative w-full transition-colors duration-300`}>
+    <div className={`min-h-screen ${backgroundModeClass} text-[#f5efe6] font-sans antialiased selection:bg-[#ff7a00] selection:text-white relative w-full transition-colors duration-300 ${isDesktopPos ? 'lg:grid lg:grid-cols-[240px_1fr_380px] lg:h-screen lg:overflow-hidden' : 'overflow-x-hidden'}`}>
       
       {/* Welcome & WhatsApp Capture Screen when scanning QR (?mesa=X) */}
       {showWelcomeScreen && currentTableId !== null && (
@@ -1771,8 +1816,31 @@ export default function App() {
         </div>
       )}
 
-      {/* Header */}
-      <header className="sticky top-0 z-50 bg-[#1c1917]/95 backdrop-blur-md border-b border-[#3a3632]">
+      {/* Columna 1 (Desktop POS): Sidebar Izquierdo */}
+      {isDesktopPos && (
+        <PosSidebar
+          restaurantProfile={restaurantProfile}
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          isAdminAuthenticated={isAdminAuthenticated}
+          canAccessTables={canAccessTables}
+          canAccessKitchen={canAccessKitchen}
+          canAccessAdminTab={canAccessAdminTab}
+          pendingKitchenCount={pendingKitchenCount}
+          pendingChangeRequestsCount={pendingChangeRequests.length}
+          waiterCalls={waiterCalls}
+          onAttendWaiterCall={attendWaiterCall}
+          staffDisplayName={staffDisplayName}
+          staffRoleLabel={staffRoleLabel}
+          onLogout={handleLogout}
+        />
+      )}
+
+      {/* Columna Central (en POS Desktop con scroll independiente) */}
+      <div className={isDesktopPos ? 'h-full overflow-y-auto min-w-0 pos-scrollbar' : ''}>
+
+      {/* Header (visible en clientes y en móvil/tablet; oculto en Desktop POS donde aplica el Sidebar) */}
+      <header className={`sticky top-0 z-50 bg-[#1c1917]/95 backdrop-blur-md border-b border-[#3a3632] ${isDesktopPos ? 'lg:hidden' : ''}`}>
         <div className="max-w-[1280px] mx-auto px-3 sm:px-6 h-[68px] sm:h-[72px] flex items-center justify-between gap-3">
           {/* Logo & Title */}
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
@@ -1918,10 +1986,45 @@ export default function App() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-[1280px] mx-auto px-4 sm:px-6 py-6 pb-36 sm:pb-12">
+      <main className={`max-w-[1280px] mx-auto px-4 sm:px-6 py-6 ${isDesktopPos ? 'pb-10' : 'pb-36 sm:pb-12'}`}>
         {activeTab === 'menu' && (
-          <div className="space-y-8 animate-fadeIn">
-            {/* Hero Banner */}
+          <div className="space-y-6 animate-fadeIn">
+            {/* Cabecera POS Desktop con Buscador en Tiempo Real (oculta Hero Banner de cliente) */}
+            {isDesktopPos ? (
+              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-[#292524] border border-[#3a3632] rounded-[20px] p-5 shadow-lg">
+                <div className="min-w-0">
+                  <h2 className="text-[22px] font-serif font-extrabold tracking-tight text-[#f5efe6] truncate">
+                    Carta y Toma de Pedidos
+                  </h2>
+                  <p className="text-xs text-[#a8a29e] mt-0.5 truncate">
+                    {selectedTableObject
+                      ? `Mesa activa en panel: ${selectedTableObject.name}`
+                      : 'Selecciona una mesa en el panel derecho o desde Gestión de Mesas'}
+                  </p>
+                </div>
+                <div className="relative w-full xl:w-80 shrink-0">
+                  <Search className="w-4 h-4 text-[#a8a29e] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={posMenuSearch}
+                    onChange={(e) => setPosMenuSearch(e.target.value)}
+                    placeholder="Buscar plato, bebida o categoría..."
+                    className="w-full bg-[#1c1917] border border-[#3a3632] focus:border-[#ff7a00] rounded-xl pl-10 pr-9 py-2.5 text-sm text-[#f5efe6] placeholder-[#78716c] focus:outline-none transition-colors"
+                  />
+                  {posMenuSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setPosMenuSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-md text-[#a8a29e] hover:text-white cursor-pointer"
+                      aria-label="Limpiar búsqueda"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+            /* Hero Banner (Modo Cliente / Móvil) */
             <div className="relative rounded-[24px] overflow-hidden bg-gradient-to-r from-[#292524] to-[#1c1917] border border-[#3a3632] p-6 sm:p-10 flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl">
               <div className="space-y-3 z-10 max-w-xl">
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#ff7a00]/20 text-[#ff7a00] text-[12px] font-semibold tracking-wide uppercase">
@@ -2009,6 +2112,7 @@ export default function App() {
                 </div>
               </div>
             </div>
+            )}
 
             {/* Active Table Order Banner: Real-time Comanda Tracker */}
             {activeOrderForCurrentTable && (
@@ -2026,7 +2130,9 @@ export default function App() {
                     requestBill(table);
                   } else {
                     setModalMode('bill');
-                    setCustomerModalOpen(true);
+                    if (!isDesktopPos) {
+                      setCustomerModalOpen(true);
+                    }
                   }
                 }}
                 onCancelOrder={cancelOrder}
@@ -2034,7 +2140,7 @@ export default function App() {
             )}
 
             {/* Categories Carousel */}
-            <div id="menu-list-section" className="flex items-center gap-2 overflow-x-auto w-full pb-2 no-scrollbar scroll-mt-24">
+            <div id="menu-list-section" className="flex items-center gap-2 overflow-x-auto no-scrollbar lg:flex-wrap lg:overflow-x-visible w-full pb-2 scroll-mt-24">
               {categoriesWithAll.map(category => (
                 <button
                   key={`cat-pill-${category}`}
@@ -2052,44 +2158,62 @@ export default function App() {
 
             {/* Menu Grid: If TODOS, grouped neatly by Category; If specific, direct list */}
             {selectedCategory === 'TODOS' ? (
-              <div className="space-y-12">
-                {MENU_CATEGORIAS.map(cat => {
-                  const itemsInCat = uniqueMenu.filter(item => item.categoria === cat);
-                  if (itemsInCat.length === 0) return null;
-                  return (
-                    <div key={`category-group-${cat}`} className="space-y-4">
-                      <div className="flex items-center gap-3 border-b border-[#3a3632] pb-3">
-                        <div className="w-3.5 h-3.5 rounded-full bg-[#ff7a00]" />
-                        <h3 className="text-xl font-serif font-bold text-[#f5efe6] tracking-tight">{cat}</h3>
-                        <span className="text-xs text-[#a8a29e] bg-[#292524] px-3 py-1 rounded-full border border-[#3a3632]">
-                          {itemsInCat.length} platos
-                        </span>
+              searchedMenu.length === 0 ? (
+                <div className="text-center py-14 bg-[#292524] border border-[#3a3632] rounded-[24px] text-[#a8a29e]">
+                  <Search className="w-10 h-10 mx-auto mb-2.5 opacity-40 text-[#ff7a00]" />
+                  <p className="text-sm font-bold text-[#f5efe6]">No se encontraron platos</p>
+                  <p className="text-xs mt-1">Prueba con otro término de búsqueda.</p>
+                </div>
+              ) : (
+                <div className="space-y-12">
+                  {MENU_CATEGORIAS.map(cat => {
+                    const itemsInCat = searchedMenu.filter(item => item.categoria === cat);
+                    if (itemsInCat.length === 0) return null;
+                    return (
+                      <div key={`category-group-${cat}`} className="space-y-4">
+                        <div className="flex items-center gap-3 border-b border-[#3a3632] pb-3">
+                          <div className="w-3.5 h-3.5 rounded-full bg-[#ff7a00]" />
+                          <h3 className="text-xl font-serif font-bold text-[#f5efe6] tracking-tight">{cat}</h3>
+                          <span className="text-xs text-[#a8a29e] bg-[#292524] px-3 py-1 rounded-full border border-[#3a3632]">
+                            {itemsInCat.length} platos
+                          </span>
+                        </div>
+                        <div className={`grid grid-cols-1 sm:grid-cols-2 ${isDesktopPos ? 'xl:grid-cols-3' : 'lg:grid-cols-3'} gap-6`}>
+                          {itemsInCat.map(product => (
+                            <ProductCard
+                              key={product.id}
+                              product={product}
+                              onAddToCart={addToCart}
+                              onUpdateQty={updateCartQty}
+                              cartQty={cart.find(c => c.id === product.id)?.qty || 0}
+                            />
+                          ))}
+                        </div>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {itemsInCat.map(product => (
-                          <ProductCard
-                            key={product.id}
-                            product={product}
-                            onAddToCart={addToCart}
-                            cartQty={cart.find(c => c.id === product.id)?.qty || 0}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {filteredMenu.map(product => (
-                  <ProductCard
-                    key={product.id}
-                    product={product}
-                    onAddToCart={addToCart}
-                    cartQty={cart.find(c => c.id === product.id)?.qty || 0}
-                  />
-                ))}
-              </div>
+              filteredMenu.length === 0 ? (
+                <div className="text-center py-14 bg-[#292524] border border-[#3a3632] rounded-[24px] text-[#a8a29e]">
+                  <Search className="w-10 h-10 mx-auto mb-2.5 opacity-40 text-[#ff7a00]" />
+                  <p className="text-sm font-bold text-[#f5efe6]">Sin resultados en {selectedCategory}</p>
+                  <p className="text-xs mt-1">Limpia el buscador o cambia de categoría.</p>
+                </div>
+              ) : (
+                <div className={`grid grid-cols-1 sm:grid-cols-2 ${isDesktopPos ? 'xl:grid-cols-3' : 'lg:grid-cols-3'} gap-6`}>
+                  {filteredMenu.map(product => (
+                    <ProductCard
+                      key={product.id}
+                      product={product}
+                      onAddToCart={addToCart}
+                      onUpdateQty={updateCartQty}
+                      cartQty={cart.find(c => c.id === product.id)?.qty || 0}
+                    />
+                  ))}
+                </div>
+              )
             )}
           </div>
         )}
@@ -2334,7 +2458,9 @@ export default function App() {
                                 setCurrentTableId(table.id);
                                 setModalMode('bill');
                                 setCashAmount('');
-                                setCustomerModalOpen(true);
+                                if (!isDesktopPos) {
+                                  setCustomerModalOpen(true);
+                                }
                               }}
                               className="w-full py-2.5 px-3 rounded-[12px] bg-emerald-600 hover:bg-emerald-700 text-[13px] font-semibold text-white transition-colors flex items-center justify-center gap-2 cursor-pointer shadow"
                             >
@@ -2987,74 +3113,88 @@ export default function App() {
           </div>
         )}
       </main>
+      </div>
 
-      {/* Cart & Checkout Modal (Z-[1200], 100dvh, Sticky Footer with Enviar Pedido) */}
-      <CartModal
-        isOpen={customerModalOpen}
-        onClose={() => setCustomerModalOpen(false)}
-        modalMode={modalMode}
-        cart={cart}
-        cartTotal={cartTotal}
-        tables={tables}
-        currentTableId={currentTableId}
-        activeOrder={activeOrderForCurrentTable}
-        onTableChange={handleTableChange}
-        onUpdateQty={updateCartQty}
-        onRemoveItem={removeFromCart}
-        onPlaceOrder={placeOrder}
-        onPayment={handlePayment}
-        cashAmount={cashAmount}
-        setCashAmount={setCashAmount}
-        onViewMenu={() => setActiveTab('menu')}
-        onSwitchToBill={() => {
-          const effectiveId = isClientMode 
-            ? (Number(localStorage.getItem('churo_mesa')) || mesaQR || currentTableId)
-            : currentTableId;
-          const table = effectiveId !== null ? tables.find(t => t.id === Number(effectiveId)) : null;
-          if (table) {
-            requestBill(table);
-          } else {
-            setModalMode('bill');
-          }
-        }}
-        onSwitchMode={(mode) => {
-          setCashAmount('');
-          setModalMode(mode);
-        }}
-        isClientMode={isClientMode}
-        isStaffAuthenticated={isStaffAuthenticated}
-        isAdminAuthenticated={isAdminAuthenticated}
-        canTakeOrders={isAdminAuthenticated || canAccessTables}
-        canManageKitchen={isAdminAuthenticated || canAccessKitchen}
-        canCharge={canAccessCashier}
-        staffName={user?.displayName || staffSession?.name || 'Personal'}
-        onStaffLoginSuccess={(session) => setStaffSession(session)}
-        onCallWaiterForBill={handleCallWaiterForBill}
-        onRequestTableChange={() => setIsRequestChangeModalOpen(true)}
-        onUpdateOrderStatus={updateOrderStatus}
-        onRemoveOrderItem={handleRemoveOrderItem}
-        onOpenTableMove={(table) => {
-          const req = pendingChangeRequests.find(r => r.mesa_origen === table.id);
-          setMoveStaffModal({
-            isOpen: true,
-            sourceTable: table,
-            requestId: req?.id,
-            requestDetails: req || null
-          });
-        }}
-      />
+      {/* Columna 3 (Desktop POS): Panel Derecho Fijo / o Drawer Overlay en Móvil & Cliente */}
+      {(() => {
+        const sharedCartProps = {
+          onClose: () => setCustomerModalOpen(false),
+          modalMode,
+          cart,
+          cartTotal,
+          tables,
+          currentTableId,
+          activeOrder: activeOrderForCurrentTable,
+          onTableChange: handleTableChange,
+          onUpdateQty: updateCartQty,
+          onRemoveItem: removeFromCart,
+          onPlaceOrder: placeOrder,
+          onPayment: handlePayment,
+          cashAmount,
+          setCashAmount,
+          onViewMenu: () => setActiveTab('menu'),
+          onSwitchToBill: () => {
+            const effectiveId = isClientMode
+              ? (Number(localStorage.getItem('churo_mesa')) || mesaQR || currentTableId)
+              : currentTableId;
+            const table = effectiveId !== null ? tables.find(t => t.id === Number(effectiveId)) : null;
+            if (table) {
+              requestBill(table);
+            } else {
+              setModalMode('bill');
+            }
+          },
+          onSwitchMode: (mode: 'cart' | 'bill') => {
+            setCashAmount('');
+            setModalMode(mode);
+          },
+          isClientMode,
+          isStaffAuthenticated,
+          isAdminAuthenticated,
+          canTakeOrders: isAdminAuthenticated || canAccessTables,
+          canManageKitchen: isAdminAuthenticated || canAccessKitchen,
+          canCharge: canAccessCashier,
+          staffName: user?.displayName || staffSession?.name || 'Personal',
+          onStaffLoginSuccess: (session: StaffSession) => setStaffSession(session),
+          onCallWaiterForBill: handleCallWaiterForBill,
+          onRequestTableChange: () => setIsRequestChangeModalOpen(true),
+          onUpdateOrderStatus: updateOrderStatus,
+          onRemoveOrderItem: handleRemoveOrderItem,
+          onOpenTableMove: (table: Table) => {
+            const req = pendingChangeRequests.find(r => r.mesa_origen === table.id);
+            setMoveStaffModal({
+              isOpen: true,
+              sourceTable: table,
+              requestId: req?.id,
+              requestDetails: req || null
+            });
+          },
+        };
 
-      {/* Floating Mobile Cart Bar (Hides when Cart Modal is Open) */}
-      <FloatingCartBar
-        cart={cart}
-        cartTotal={cartTotal}
-        isOpen={customerModalOpen}
-        selectedTable={selectedTableObject}
-        onOpenCart={() => {
-          setModalMode('cart');
-          setCustomerModalOpen(true);
-        }}
-      />
+        if (isDesktopPos) {
+          return (
+            <aside className="hidden lg:flex lg:flex-col lg:h-full lg:overflow-hidden">
+              <CartModal {...sharedCartProps} isDocked={true} isOpen={true} />
+            </aside>
+          );
+        }
+
+        return (
+          <>
+            <CartModal {...sharedCartProps} isDocked={false} isOpen={customerModalOpen} />
+            <FloatingCartBar
+              cart={cart}
+              cartTotal={cartTotal}
+              isOpen={customerModalOpen}
+              selectedTable={selectedTableObject}
+              onOpenCart={() => {
+                setModalMode('cart');
+                setCustomerModalOpen(true);
+              }}
+            />
+          </>
+        );
+      })()}
 
       {/* Mobile Bottom Dock */}
       <MobileDock

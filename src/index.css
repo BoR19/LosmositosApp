@@ -1,1 +1,75 @@
 @import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  /* Scrollbars minimalistas Dark Mode (Firefox) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a2a transparent;
+  }
+
+  /* Scrollbars minimalistas Dark Mode (Chrome, Edge, Safari) */
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: #2a2a2a;
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: #404040;
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  /* Scroll fino con acento naranja oscuro sutil al hacer hover para columnas POS */
+  .pos-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a2a transparent;
+  }
+
+  .pos-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .pos-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .pos-scrollbar::-webkit-scrollbar-thumb {
+    background-color: #2a2a2a;
+    border-radius: 9999px;
+  }
+
+  .pos-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: #7c2d12;
+  }
+
+  /* Oculta la barra visual manteniendo el scroll horizontal/vertical funcional */
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+}
+
