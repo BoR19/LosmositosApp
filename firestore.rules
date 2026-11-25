@@ -1,8 +1,177 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // =========================================================================
+    // REDE DE SEGURIDAD POR DEFECTO (Zero-Trust Catch-All)
+    // =========================================================================
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // FUNCIONES AUXILIARES DE VALIDACIÓN
+    // =========================================================================
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidFourDigitPin(pin) {
+      return pin is string && pin.size() == 4 && pin.matches('^[0-9]{4}$');
+    }
+
+    // Helper opcional si deseas restringir configuracion/seguridad y colaboradores
+    // exclusivamente a cuentas Google autorizadas mediante Firebase Auth:
+    function isAuthorizedGoogleAdmin() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/configuracion/seguridad)
+        && get(/databases/$(database)/documents/configuracion/seguridad).data.adminsGoogle is list
+        && request.auth.token.email.lower() in get(/databases/$(database)/documents/configuracion/seguridad).data.adminsGoogle;
+    }
+
+    function isValidSecurityConfig(data) {
+      return data.keys().hasAll(['pinMaestro'])
+        && data.keys().hasOnly(['pinMaestro', 'adminsGoogle', 'updatedAt'])
+        && isValidFourDigitPin(data.pinMaestro)
+        && (!('adminsGoogle' in data) || (
+          data.adminsGoogle is list && data.adminsGoogle.size() <= 20
+        ));
+    }
+
+    function isValidColaborador(data) {
+      return data.keys().hasAll(['nombre', 'cargo', 'pin', 'activo', 'permisos'])
+        && data.keys().hasOnly(['nombre', 'cargo', 'pin', 'activo', 'permisos', 'creadoEn', 'actualizadoEn'])
+        && data.nombre is string && data.nombre.size() >= 2 && data.nombre.size() <= 80
+        && data.cargo in ['Mozo', 'Cocina', 'Cajero']
+        && isValidFourDigitPin(data.pin)
+        && data.activo is bool
+        && data.permisos is list
+        && data.permisos.size() >= 1 && data.permisos.size() <= 5
+        && data.permisos.hasOnly(['mesas', 'cocina', 'caja', 'menu_admin', 'reportes']);
+    }
+
+    // =========================================================================
+    // CONFIGURACIÓN DE SEGURIDAD Y EQUIPO (EL CHURO MOSITO)
+    // Nota: Permite operación fluida tanto con PIN Maestro en tablets (sin
+    // Firebase Auth) como con Cuenta Google Admin, validando esquema estricto.
+    // Para entornos exclusivos de Google Auth, reemplaza el write por:
+    //   allow write: if isAuthorizedGoogleAdmin() && ...
+    // =========================================================================
+    match /configuracion/seguridad {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if isValidSecurityConfig(incoming());
+      allow delete: if false;
+    }
+
+    match /configuracion/perfil {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if incoming().keys().hasOnly([
+        'nombre', 'slogan', 'telefono', 'logoUrl',
+        'colorPrimario', 'colorSecundario', 'modoFondo', 'updatedAt'
+      ]);
+      allow delete: if false;
+    }
+
+    match /colaboradores/{colaboradorId} {
+      allow list: if true;
+      allow get: if isValidId(colaboradorId);
+      allow create: if isValidId(colaboradorId)
+        && isValidColaborador(incoming());
+      allow update: if isValidId(colaboradorId)
+        && isValidColaborador(incoming())
+        && (
+          !('creadoEn' in existing()) ||
+          incoming().creadoEn == existing().creadoEn
+        );
+      allow delete: if isValidId(colaboradorId);
+    }
+
+    // =========================================================================
+    // COLECCIONES OPERATIVAS DEL RESTAURANTE Y CARTA QR
+    // =========================================================================
+    match /menu/{platoId} {
+      allow list: if true;
+      allow get: if isValidId(platoId);
+      allow create, update: if isValidId(platoId)
+        && incoming().nombre is string && incoming().nombre.size() <= 120
+        && incoming().precioBs is number && incoming().precioBs >= 0
+        && incoming().disponible is bool;
+      allow delete: if isValidId(platoId);
+    }
+
+    match /mesas/{mesaId} {
+      allow list: if true;
+      allow get: if isValidId(mesaId);
+      allow create, update: if isValidId(mesaId)
+        && incoming().id is number
+        && incoming().name is string && incoming().name.size() <= 60;
+      allow delete: if isValidId(mesaId);
+    }
+
+    match /pedidos/{pedidoId} {
+      allow list: if true;
+      allow get: if isValidId(pedidoId);
+      allow create, update: if isValidId(pedidoId)
+        && incoming().tableId is number
+        && incoming().status in ['pendiente', 'en-preparacion', 'servido', 'por-pagar', 'pagado', 'cancelado']
+        && incoming().total is number && incoming().total >= 0;
+      allow delete: if isValidId(pedidoId);
+    }
+
+    match /llamadas/{llamadaId} {
+      allow list: if true;
+      allow get: if isValidId(llamadaId);
+      allow create, update: if isValidId(llamadaId)
+        && incoming().tableId is number
+        && incoming().type in ['mozo', 'cuenta'];
+      allow delete: if isValidId(llamadaId);
+    }
+
+    match /clientes/{clienteId} {
+      allow list: if true;
+      allow get: if isValidId(clienteId);
+      allow create, update: if isValidId(clienteId);
+      allow delete: if isValidId(clienteId);
+    }
+
+    match /mesas_activas/{mesaId} {
+      allow list: if true;
+      allow get: if isValidId(mesaId);
+      allow create, update: if isValidId(mesaId);
+      allow delete: if isValidId(mesaId);
+    }
+
+    match /solicitudes_cambio/{solicitudId} {
+      allow list: if true;
+      allow get: if isValidId(solicitudId);
+      allow create, update: if isValidId(solicitudId)
+        && incoming().mesa_origen is number
+        && incoming().estado in ['pendiente', 'completado', 'rechazado'];
+      allow delete: if isValidId(solicitudId);
+    }
+
+    match /tickets_history/{ticketId} {
+      allow list: if true;
+      allow get: if isValidId(ticketId);
+      allow create: if isValidId(ticketId);
+      allow update, delete: if false;
+    }
+
+    match /print_queue/{printId} {
+      allow list: if true;
+      allow get: if isValidId(printId);
+      allow create, update, delete: if isValidId(printId);
     }
   }
 }

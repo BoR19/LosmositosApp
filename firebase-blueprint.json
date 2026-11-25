@@ -9,7 +9,10 @@
         "nombre": { "type": "string" },
         "precioBs": { "type": "number" },
         "disponible": { "type": "boolean" },
-        "categoria": { "type": "string" }
+        "categoria": { "type": "string" },
+        "descripcion": { "type": "string" },
+        "image": { "type": "string" },
+        "notas": { "type": "string" }
       },
       "required": ["id", "nombre", "precioBs", "disponible", "categoria"]
     },
@@ -20,11 +23,16 @@
       "properties": {
         "id": { "type": "string" },
         "mesaId": { "type": "number" },
-        "status": { "type": "string", "enum": ["pendiente", "en-preparacion", "servido", "por-pagar"] },
+        "tableId": { "type": "number" },
+        "tableName": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["pendiente", "en-preparacion", "servido", "por-pagar", "pagado", "cancelado"]
+        },
         "total": { "type": "number" },
         "timestamp": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "mesaId", "status", "total", "timestamp"]
+      "required": ["tableId", "status", "total"]
     },
     "Llamada": {
       "title": "Llamada",
@@ -66,6 +74,46 @@
         "colorSecundario": { "type": "string" },
         "modoFondo": { "type": "string" }
       }
+    },
+    "Seguridad": {
+      "title": "Seguridad",
+      "description": "PIN Maestro de Administrador y lista opcional de correos Google autorizados.",
+      "type": "object",
+      "properties": {
+        "pinMaestro": { "type": "string", "pattern": "^[0-9]{4}$", "minLength": 4, "maxLength": 4 },
+        "adminsGoogle": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["pinMaestro"]
+    },
+    "Colaborador": {
+      "title": "Colaborador",
+      "description": "Personal del restaurante con PIN único de 4 dígitos y permisos granulares.",
+      "type": "object",
+      "properties": {
+        "nombre": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "cargo": { "type": "string", "enum": ["Mozo", "Cocina", "Cajero"] },
+        "pin": { "type": "string", "pattern": "^[0-9]{4}$", "minLength": 4, "maxLength": 4 },
+        "activo": { "type": "boolean" },
+        "permisos": { "type": "array" },
+        "creadoEn": { "type": "string", "format": "date-time" },
+        "actualizadoEn": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nombre", "cargo", "pin", "activo", "permisos"]
+    },
+    "SolicitudCambio": {
+      "title": "SolicitudCambio",
+      "description": "Solicitud de traslado de mesa realizada por clientes o simulada desde admin.",
+      "type": "object",
+      "properties": {
+        "mesa_origen": { "type": "number" },
+        "mesa_destino": { "type": "number" },
+        "celular": { "type": "string" },
+        "motivo": { "type": "string" },
+        "estado": { "type": "string", "enum": ["pendiente", "completado", "rechazado"] },
+        "cliente_nombre": { "type": "string" }
+      },
+      "required": ["mesa_origen", "motivo", "estado"]
     }
   },
   "firestore": {
@@ -75,7 +123,7 @@
     },
     "/pedidos/{pedidoId}": {
       "schema": "Pedido",
-      "description": "Colección de pedidos activos."
+      "description": "Colección de pedidos y comandas."
     },
     "/llamadas/{llamadaId}": {
       "schema": "Llamada",
@@ -85,15 +133,33 @@
       "schema": "Mesa",
       "description": "Colección de mesas del restaurante."
     },
-    "/configuracion/{docId}": {
+    "/configuracion/perfil": {
       "schema": "Configuracion",
-      "description": "Configuración del restaurante e identidad de marca."
+      "description": "Perfil del restaurante e identidad de marca."
+    },
+    "/configuracion/seguridad": {
+      "schema": "Seguridad",
+      "description": "Configuración de PIN Maestro y administradores Google autorizados."
+    },
+    "/colaboradores/{colaboradorId}": {
+      "schema": "Colaborador",
+      "description": "Equipo de colaboradores y sus permisos de módulo."
     },
     "/clientes/{clienteId}": {
       "description": "Colección de clientes y WhatsApp capturados por QR."
     },
     "/mesas_activas/{mesaId}": {
       "description": "Vinculación en tiempo real de cliente a mesa activa."
+    },
+    "/solicitudes_cambio/{solicitudId}": {
+      "schema": "SolicitudCambio",
+      "description": "Solicitudes de cambio de mesa en tiempo real."
+    },
+    "/tickets_history/{ticketId}": {
+      "description": "Historial de recibos y ventas cobradas."
+    },
+    "/print_queue/{printId}": {
+      "description": "Cola de impresión de tickets térmicos."
     }
   }
 }

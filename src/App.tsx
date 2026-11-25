@@ -3,27 +3,35 @@ import {
   Utensils, QrCode, ShoppingBag, Clock, Sparkles, AlertCircle, 
   ChefHat, Layers, Award, Bell, FileText, CheckCheck, LogIn, LogOut, Lock,
   Plus, Trash2, Pencil, Search, DollarSign, Image as ImageIcon, SlidersHorizontal,
-  Building2, Home, ArrowRightLeft
+  Building2, Home, ArrowRightLeft, Users
 } from 'lucide-react';
 import { db, auth, googleProvider } from './firebase.ts';
 import { collection, onSnapshot, addDoc, updateDoc, doc, setDoc, deleteDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
 
 import { MENU_CATEGORIAS, INITIAL_MENU, INITIAL_TABLES, formatTableOptionLabel } from './data/menuData.ts';
-import { MenuItem, CartItem, Table, Order, OrderItem, WaiterCall, NotificationState, RestaurantProfile, SolicitudCambio } from './types/index.ts';
+import { MenuItem, CartItem, Table, Order, OrderItem, WaiterCall, NotificationState, RestaurantProfile, SolicitudCambio, Collaborator, SecurityConfig, StaffSession } from './types/index.ts';
 import { ProductCard } from './components/ProductCard.tsx';
 import { CartModal } from './components/CartModal.tsx';
 import { FloatingCartBar } from './components/FloatingCartBar.tsx';
 import { MobileDock } from './components/MobileDock.tsx';
 import { QrModal } from './components/QrModal.tsx';
 import { ActiveOrderBanner } from './components/ActiveOrderBanner.tsx';
-import { StaffLoginView, StaffSession } from './components/StaffLoginView.tsx';
+import { StaffLoginView } from './components/StaffLoginView.tsx';
 import { AddTableModal, DeleteTableModal } from './components/TableModals.tsx';
 import { AddEditDishModal, QuickPriceModal, DeleteDishModal } from './components/DishModals.tsx';
 import { RestaurantProfileAdmin } from './components/RestaurantProfileAdmin.tsx';
 import { WelcomeScreen } from './components/WelcomeScreen.tsx';
 import { TicketHistoryAdmin } from './components/TicketHistoryAdmin.tsx';
 import { RequestTableChangeModal, MoveTableStaffModal, ClientConfirmMoveModal } from './components/TableChangeModals.tsx';
+import { EquipoYPermisos } from './components/EquipoYPermisos.tsx';
+import {
+  subscribeSecurityConfig,
+  subscribeCollaborators,
+  isGoogleUserAdmin,
+  hasPermission,
+  ALL_PERMISSION_KEYS,
+} from './services/staffSecurityService.ts';
 
 
 
@@ -38,9 +46,40 @@ export default function App() {
       return null;
     }
   });
-  const isStaffAuthenticated = Boolean(user || staffSession);
-  const isAdminAuthenticated = Boolean(user || staffSession?.role === 'admin');
-  const [activeTab, setActiveTab] = useState<string>('menu'); 
+  const [securityConfig, setSecurityConfig] = useState<SecurityConfig>({
+    pinMaestro: '7777',
+    adminsGoogle: [],
+  });
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
+  const [securityLoaded, setSecurityLoaded] = useState<boolean>(false);
+  const [collaboratorsLoaded, setCollaboratorsLoaded] = useState<boolean>(false);
+
+  const isGoogleAdmin = Boolean(user && isGoogleUserAdmin(user.email, securityConfig));
+  const isAdminAuthenticated = Boolean(
+    isGoogleAdmin ||
+      staffSession?.isMasterAdmin ||
+      (staffSession?.role === 'admin' && !staffSession?.collaboratorId)
+  );
+  const isStaffAuthenticated = Boolean(isGoogleAdmin || staffSession);
+
+  const canAccessTables = hasPermission(staffSession, 'mesas', isGoogleAdmin);
+  const canAccessKitchen = hasPermission(staffSession, 'cocina', isGoogleAdmin);
+  const canAccessCashier = hasPermission(staffSession, 'caja', isGoogleAdmin);
+  const canAccessMenuAdmin = hasPermission(staffSession, 'menu_admin', isGoogleAdmin);
+  const canAccessReports = hasPermission(staffSession, 'reportes', isGoogleAdmin);
+  const canAccessAdminTab = Boolean(
+    isAdminAuthenticated || canAccessMenuAdmin || canAccessReports
+  );
+
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname.toLowerCase();
+      if (path.includes('/admin')) return 'admin';
+      if (path.includes('/mesas')) return 'tables';
+      if (path.includes('/cocina')) return 'kitchen';
+    }
+    return 'menu';
+  });
   // Carrito persistente con ciclo de vida de sesión y verificación de expiración (> 4 horas sin pagar)
   const [cart, setCart] = useState<CartItem[]>(() => {
     try {
@@ -98,14 +137,7 @@ export default function App() {
   }, []);
 
   const isStaff = Boolean(
-    user || 
-    staffSession || 
-    (typeof localStorage !== 'undefined' && (
-      localStorage.getItem('admin_role') === 'mozo' || 
-      localStorage.getItem('admin_role') === 'admin' || 
-      localStorage.getItem('admin_role') === 'cajero' ||
-      localStorage.getItem('churo_role') === 'staff'
-    )) ||
+    isStaffAuthenticated ||
     (typeof window !== 'undefined' && (
       window.location.pathname.includes('/admin') || 
       window.location.pathname.includes('/mesas')
@@ -192,7 +224,12 @@ export default function App() {
     colorSecundario: '#10b981',
     modoFondo: 'dark-zinc',
   });
-  const [adminSubTab, setAdminSubTab] = useState<'inventario' | 'perfil' | 'historial'>('inventario');
+  const [adminSubTab, setAdminSubTab] = useState<'inventario' | 'perfil' | 'historial' | 'equipo'>(() => {
+    if (typeof window !== 'undefined' && window.location.pathname.toLowerCase().includes('/admin/equipo')) {
+      return 'equipo';
+    }
+    return 'inventario';
+  });
 
   // Estado para la pantalla de bienvenida y captura de WhatsApp al escanear QR (?mesa=X)
   const [showWelcomeScreen, setShowWelcomeScreen] = useState<boolean>(() => {
@@ -242,6 +279,8 @@ export default function App() {
       console.warn("Error al cerrar sesión de Firebase:", e);
     }
     localStorage.removeItem('elchuro_staff_session');
+    localStorage.removeItem('admin_role');
+    localStorage.removeItem('churo_role');
     setStaffSession(null);
     setActiveTab('menu');
     showToast('Sesión de personal cerrada.');
@@ -419,6 +458,147 @@ export default function App() {
   useEffect(() => {
     console.log("Publica estas reglas en Firebase Console > Firestore > Rules > Publish");
   }, []);
+
+  // Suscripción en tiempo real a Seguridad (PIN Maestro) y Colaboradores (solo cuando no es cliente QR puro)
+  useEffect(() => {
+    const needsSecuritySync =
+      isStaffAuthenticated ||
+      activeTab === 'tables' ||
+      activeTab === 'kitchen' ||
+      activeTab === 'admin';
+
+    if (!needsSecuritySync) return;
+
+    const unsubSec = subscribeSecurityConfig(
+      (cfg) => {
+        setSecurityConfig(cfg);
+        setSecurityLoaded(true);
+      },
+      () => setSecurityLoaded(true)
+    );
+
+    const unsubCollabs = subscribeCollaborators(
+      (list) => {
+        setCollaborators(list);
+        setCollaboratorsLoaded(true);
+      },
+      () => setCollaboratorsLoaded(true)
+    );
+
+    return () => {
+      unsubSec();
+      unsubCollabs();
+    };
+  }, [isStaffAuthenticated, activeTab]);
+
+  // Efecto de sincronización y revocación inmediata en tiempo real
+  useEffect(() => {
+    // 1. Si hay cuenta Google logueada pero ya no está autorizada en adminsGoogle
+    if (securityLoaded && user && !isGoogleUserAdmin(user.email, securityConfig)) {
+      signOut(auth).catch(() => {});
+      localStorage.removeItem('elchuro_staff_session');
+      setStaffSession(null);
+      setActiveTab('menu');
+      showToast('Tu cuenta Google ya no tiene permisos de Administrador.', 'error');
+      return;
+    }
+
+    // 2. Si es sesión por PIN de colaborador, validar estado activo, PIN y permisos en vivo
+    if (collaboratorsLoaded && staffSession?.collaboratorId) {
+      const liveCollab = collaborators.find((c) => c.id === staffSession.collaboratorId);
+      if (
+        !liveCollab ||
+        !liveCollab.activo ||
+        (staffSession.sessionPin && liveCollab.pin !== staffSession.sessionPin)
+      ) {
+        localStorage.removeItem('elchuro_staff_session');
+        setStaffSession(null);
+        setActiveTab('menu');
+        showToast('Tu acceso ha sido actualizado o desactivado por el Administrador.', 'error');
+        return;
+      }
+
+      // Sincronizar permisos o datos si el Admin los editó mientras el colaborador estaba conectado
+      const permsChanged =
+        JSON.stringify(liveCollab.permisos) !== JSON.stringify(staffSession.permisos);
+      const infoChanged =
+        liveCollab.nombre !== staffSession.name || liveCollab.cargo !== staffSession.cargo;
+
+      if (permsChanged || infoChanged) {
+        const updatedSession: StaffSession = {
+          ...staffSession,
+          name: liveCollab.nombre,
+          cargo: liveCollab.cargo,
+          permisos: liveCollab.permisos,
+        };
+        setStaffSession(updatedSession);
+        localStorage.setItem('elchuro_staff_session', JSON.stringify(updatedSession));
+      }
+    }
+
+    // 3. Si es sesión por PIN Maestro y otro Admin cambió el PIN Maestro en Firestore
+    if (
+      securityLoaded &&
+      staffSession?.isMasterAdmin &&
+      staffSession.authType === 'pin' &&
+      staffSession.sessionPin &&
+      securityConfig.pinMaestro !== staffSession.sessionPin
+    ) {
+      localStorage.removeItem('elchuro_staff_session');
+      setStaffSession(null);
+      setActiveTab('menu');
+      showToast('El PIN Maestro fue modificado. Inicia sesión nuevamente.', 'info');
+    }
+  }, [collaborators, collaboratorsLoaded, securityConfig, securityLoaded, staffSession, user]);
+
+  // Bloqueo de ruta y redirección automática según permisos reales
+  useEffect(() => {
+    if (!isStaffAuthenticated) return;
+
+    if (activeTab === 'tables' && !canAccessTables) {
+      setActiveTab('menu');
+      showToast('No tienes permiso para acceder al módulo de Mesas.', 'error');
+    } else if (activeTab === 'kitchen' && !canAccessKitchen) {
+      setActiveTab('menu');
+      showToast('No tienes permiso para acceder al módulo de Cocina.', 'error');
+    } else if (activeTab === 'admin') {
+      if (!canAccessAdminTab) {
+        setActiveTab('menu');
+        showToast('No tienes permiso para acceder al módulo Admin.', 'error');
+      } else {
+        if ((adminSubTab === 'equipo' || adminSubTab === 'perfil') && !isAdminAuthenticated) {
+          setAdminSubTab(canAccessMenuAdmin ? 'inventario' : 'historial');
+        } else if (adminSubTab === 'inventario' && !isAdminAuthenticated && !canAccessMenuAdmin) {
+          if (canAccessReports) setAdminSubTab('historial');
+        } else if (adminSubTab === 'historial' && !isAdminAuthenticated && !canAccessReports) {
+          if (canAccessMenuAdmin) setAdminSubTab('inventario');
+        }
+      }
+    }
+  }, [
+    activeTab,
+    adminSubTab,
+    isStaffAuthenticated,
+    isAdminAuthenticated,
+    canAccessTables,
+    canAccessKitchen,
+    canAccessAdminTab,
+    canAccessMenuAdmin,
+    canAccessReports,
+  ]);
+
+  // Cerrar modales o drawers abiertos al cambiar de rol o de vista para evitar superposiciones
+  useEffect(() => {
+    setCustomerModalOpen(false);
+    setQrModalTable(null);
+    setIsAddTableModalOpen(false);
+    setTableToDelete(null);
+    setIsRequestChangeModalOpen(false);
+    setMoveStaffModal({ isOpen: false, sourceTable: null });
+    setDishModalOpen(false);
+    setDishToDelete(null);
+    setDishToQuickPrice(null);
+  }, [activeTab, isStaffAuthenticated, isAdminAuthenticated]);
 
   // Polling para cliente: verifica clientes/{celular} cada 10 segundos para cambio de mesa automático
   useEffect(() => {
@@ -1022,8 +1202,8 @@ export default function App() {
 
   // Payment Confirmation & Table Liberation in Firestore (Staff Only)
   const handlePayment = async (method: 'QR' | 'EFECTIVO') => {
-    if (!isStaffAuthenticated) {
-      showToast("Operación denegada. Solo el personal con PIN puede confirmar cobros y liberar la mesa.", "error");
+    if (!isStaffAuthenticated || !canAccessCashier) {
+      showToast("Operación denegada. Requiere permiso de Caja y Cobros para cobrar y liberar mesas.", "error");
       return;
     }
     if (currentTableId === null) {
@@ -1099,8 +1279,8 @@ export default function App() {
 
   // Staff function to collect & liberate table immediately
   const liberateTable = async (tableId: number) => {
-    if (!isStaffAuthenticated) {
-      showToast("Acceso denegado. Se requiere autenticación de personal con PIN.", "error");
+    if (!isStaffAuthenticated || !canAccessCashier) {
+      showToast("Acceso denegado. Se requiere permiso de Caja y Cobros para cobrar la mesa.", "error");
       return;
     }
     // Clear pending calls for this table
@@ -1570,38 +1750,49 @@ export default function App() {
           {/* Desktop Navigation */}
           <nav className="hidden md:flex items-center p-1.5 rounded-[16px] border border-[#3a3632] bg-[#292524]">
             {[
-              { id: 'menu', label: 'Menú', icon: Utensils, isStaff: false },
-              { id: 'tables', label: 'Mesas', icon: QrCode, isStaff: true },
-              { id: 'kitchen', label: 'Cocina', icon: ChefHat, isStaff: true },
-              { id: 'admin', label: 'Admin', icon: Layers, isStaff: true },
+              { id: 'menu', label: 'Menú', icon: Utensils, isStaff: false, allowed: true },
+              { id: 'tables', label: 'Mesas', icon: QrCode, isStaff: true, allowed: canAccessTables },
+              { id: 'kitchen', label: 'Cocina', icon: ChefHat, isStaff: true, allowed: canAccessKitchen },
+              { id: 'admin', label: 'Admin', icon: Layers, isStaff: true, allowed: canAccessAdminTab },
             ].map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
+              const isLocked = tab.isStaff && (!isStaffAuthenticated || !tab.allowed);
               const activeCount = orders.filter(o => o.status !== 'pagado' && o.status !== 'cancelado' && o.status !== 'servido').length;
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => {
+                    if (tab.isStaff && isStaffAuthenticated && !tab.allowed) {
+                      showToast(`No tienes permiso habilitado para ${tab.label}.`, 'error');
+                      return;
+                    }
+                    setActiveTab(tab.id);
+                  }}
                   className={`flex items-center px-4 py-2 rounded-[12px] gap-2 text-[13px] font-semibold transition-all cursor-pointer ${
-                    isActive ? 'bg-[#ff7a00] text-white shadow-lg' : 'text-[#a8a29e] hover:text-[#f5efe6]'
+                    isActive
+                      ? 'bg-[#ff7a00] text-white shadow-lg'
+                      : isLocked && isStaffAuthenticated
+                      ? 'text-[#78716c] opacity-65 hover:text-[#a8a29e]'
+                      : 'text-[#a8a29e] hover:text-[#f5efe6]'
                   }`}
                 >
                   <Icon className="w-4 h-4" />
                   <span>{tab.label}</span>
-                  {((tab.isStaff && !isStaffAuthenticated) || (tab.id === 'admin' && !isAdminAuthenticated)) && (
+                  {isLocked && (
                     <Lock className="w-3 h-3 text-[#78716c]" />
                   )}
-                  {tab.id === 'tables' && pendingChangeRequests.length > 0 && (
+                  {tab.id === 'tables' && !isLocked && pendingChangeRequests.length > 0 && (
                     <span className="ml-1 px-1.5 min-w-[20px] h-5 bg-[#ff7a00] text-black rounded-full text-[10px] font-black flex items-center justify-center animate-pulse" title="Solicitudes de cambio de mesa">
                       🔔 {pendingChangeRequests.length}
                     </span>
                   )}
-                  {tab.id === 'kitchen' && activeCount > 0 && (
+                  {tab.id === 'kitchen' && !isLocked && activeCount > 0 && (
                     <span className="ml-1 w-5 h-5 bg-amber-500 text-black rounded-full text-[10px] font-bold flex items-center justify-center">
                       {activeCount}
                     </span>
                   )}
-                  {tab.id === 'admin' && (waiterCalls.length > 0 || pendingChangeRequests.length > 0) && (
+                  {tab.id === 'admin' && !isLocked && (waiterCalls.length > 0 || pendingChangeRequests.length > 0) && (
                     <span className="ml-1 px-1.5 min-w-[20px] h-5 bg-red-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center animate-pulse">
                       {waiterCalls.length + pendingChangeRequests.length}
                     </span>
@@ -1845,17 +2036,26 @@ export default function App() {
         )}
 
         {/* Staff Protected Views: Mesas, Cocina KDS y Administración */}
-        {(activeTab === 'admin' && (!isStaffAuthenticated || !isAdminAuthenticated)) ? (
+        {((activeTab === 'tables' || activeTab === 'kitchen' || activeTab === 'admin') && !isStaffAuthenticated) ? (
           <StaffLoginView
-            onSuccess={(session) => setStaffSession(session)}
+            onSuccess={(session) => {
+              setStaffSession(session);
+              if (activeTab === 'admin' && !session.isMasterAdmin) {
+                if (session.permisos.includes('menu_admin')) {
+                  setAdminSubTab('inventario');
+                } else if (session.permisos.includes('reportes')) {
+                  setAdminSubTab('historial');
+                }
+              }
+            }}
             showToast={showToast}
-            requiredRole="Panel de Administración (PIN Administrador: 7777)"
-          />
-        ) : ((activeTab === 'tables' || activeTab === 'kitchen') && !isStaffAuthenticated) ? (
-          <StaffLoginView
-            onSuccess={(session) => setStaffSession(session)}
-            showToast={showToast}
-            requiredRole={activeTab === 'tables' ? "Gestión de Mesas (PIN Mozo: 1234 o Admin: 7777)" : "Cocina KDS (PIN Cocina: 1234 o Admin: 7777)"}
+            requiredRole={
+              activeTab === 'admin'
+                ? 'Panel de Administración'
+                : activeTab === 'tables'
+                ? 'Gestión de Mesas'
+                : 'Cocina KDS'
+            }
           />
         ) : (
           <div className="animate-fadeIn">
@@ -2045,17 +2245,19 @@ export default function App() {
                     {table.status !== 'free' ? (
                       isStaffAuthenticated ? (
                         <>
-                          <button
-                            onClick={() => {
-                              setCurrentTableId(table.id);
-                              setModalMode('bill');
-                              setCashAmount('');
-                              setCustomerModalOpen(true);
-                            }}
-                            className="w-full py-2.5 px-3 rounded-[12px] bg-emerald-600 hover:bg-emerald-700 text-[13px] font-semibold text-white transition-colors flex items-center justify-center gap-2 cursor-pointer shadow"
-                          >
-                            <CheckCheck className="w-4 h-4" /> Cobrar y Liberar Mesa
-                          </button>
+                          {canAccessCashier && (
+                            <button
+                              onClick={() => {
+                                setCurrentTableId(table.id);
+                                setModalMode('bill');
+                                setCashAmount('');
+                                setCustomerModalOpen(true);
+                              }}
+                              className="w-full py-2.5 px-3 rounded-[12px] bg-emerald-600 hover:bg-emerald-700 text-[13px] font-semibold text-white transition-colors flex items-center justify-center gap-2 cursor-pointer shadow"
+                            >
+                              <CheckCheck className="w-4 h-4" /> Cobrar y Liberar Mesa
+                            </button>
+                          )}
                           <button
                             onClick={() => {
                               const req = pendingChangeRequests.find(r => r.mesa_origen === table.id);
@@ -2172,13 +2374,15 @@ export default function App() {
                           >
                             Servido
                           </button>
-                          <button 
-                            onClick={() => liberateTable(order.tableId)}
-                            className="py-2 px-2.5 rounded-xl text-xs font-semibold bg-[#3a3632] hover:bg-emerald-700 text-emerald-300 hover:text-white transition-colors cursor-pointer"
-                            title="Cobrar comanda y liberar mesa"
-                          >
-                            Cobrar
-                          </button>
+                          {canAccessCashier && (
+                            <button 
+                              onClick={() => liberateTable(order.tableId)}
+                              className="py-2 px-2.5 rounded-xl text-xs font-semibold bg-[#3a3632] hover:bg-emerald-700 text-emerald-300 hover:text-white transition-colors cursor-pointer"
+                              title="Cobrar comanda y liberar mesa"
+                            >
+                              Cobrar
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -2188,64 +2392,89 @@ export default function App() {
             )}
 
             {/* Admin View */}
-            {activeTab === 'admin' && (
+            {activeTab === 'admin' && canAccessAdminTab && (
               <div className="space-y-8 animate-fadeIn">
                 {/* Cabecera Principal del Panel Admin con Pestañas de Navegación */}
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[#3a3632] pb-6">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#3a3632] pb-6">
                   <div>
                     <h2 className="text-[24px] sm:text-[28px] font-serif font-extrabold tracking-tight text-[#f5efe6] flex items-center gap-3">
                       <span>Panel de Administración</span>
                     </h2>
                     <p className="text-xs sm:text-sm text-[#a8a29e] mt-1">
-                      Gestiona el inventario de platos, atiende llamadas de clientes y configura la identidad de marca del restaurante.
+                      Gestiona el inventario, historial de ventas, identidad de marca y control de accesos.
                     </p>
                   </div>
 
                   {/* Selector de Módulos del Panel Admin */}
-                  <div className="flex items-center p-1.5 rounded-2xl bg-[#292524] border border-[#3a3632] self-start md:self-auto shrink-0 shadow-md">
-                    <button
-                      type="button"
-                      onClick={() => setAdminSubTab('inventario')}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                        adminSubTab === 'inventario'
-                          ? 'bg-[#ff7a00] text-white shadow-lg'
-                          : 'text-[#a8a29e] hover:text-[#f5efe6]'
-                      }`}
-                    >
-                      <Utensils className="w-4 h-4" />
-                      <span>Inventario ({uniqueMenu.length})</span>
-                    </button>
+                  <div className="flex flex-wrap items-center p-1.5 rounded-2xl bg-[#292524] border border-[#3a3632] self-start lg:self-auto shrink-0 shadow-md gap-1">
+                    {(isAdminAuthenticated || canAccessMenuAdmin) && (
+                      <button
+                        type="button"
+                        onClick={() => setAdminSubTab('inventario')}
+                        className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
+                          adminSubTab === 'inventario'
+                            ? 'bg-[#ff7a00] text-white shadow-lg'
+                            : 'text-[#a8a29e] hover:text-[#f5efe6]'
+                        }`}
+                      >
+                        <Utensils className="w-4 h-4" />
+                        <span>Inventario ({uniqueMenu.length})</span>
+                      </button>
+                    )}
 
-                    <button
-                      type="button"
-                      onClick={() => setAdminSubTab('perfil')}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                        adminSubTab === 'perfil'
-                          ? 'bg-[#ff7a00] text-[#0A0A0A] shadow-lg font-black'
-                          : 'text-[#a8a29e] hover:text-[#f5efe6]'
-                      }`}
-                    >
-                      <Building2 className="w-4 h-4" />
-                      <span>Perfil de Marca</span>
-                    </button>
+                    {isAdminAuthenticated && (
+                      <button
+                        type="button"
+                        onClick={() => setAdminSubTab('perfil')}
+                        className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
+                          adminSubTab === 'perfil'
+                            ? 'bg-[#ff7a00] text-[#0A0A0A] shadow-lg font-black'
+                            : 'text-[#a8a29e] hover:text-[#f5efe6]'
+                        }`}
+                      >
+                        <Building2 className="w-4 h-4" />
+                        <span>Perfil de Marca</span>
+                      </button>
+                    )}
 
-                    <button
-                      type="button"
-                      onClick={() => setAdminSubTab('historial')}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                        adminSubTab === 'historial'
-                          ? 'bg-[#ff7a00] text-[#0A0A0A] shadow-lg font-black'
-                          : 'text-[#a8a29e] hover:text-[#f5efe6]'
-                      }`}
-                    >
-                      <FileText className="w-4 h-4" />
-                      <span>Historial de Recibos</span>
-                    </button>
+                    {(isAdminAuthenticated || canAccessReports) && (
+                      <button
+                        type="button"
+                        onClick={() => setAdminSubTab('historial')}
+                        className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
+                          adminSubTab === 'historial'
+                            ? 'bg-[#ff7a00] text-[#0A0A0A] shadow-lg font-black'
+                            : 'text-[#a8a29e] hover:text-[#f5efe6]'
+                        }`}
+                      >
+                        <FileText className="w-4 h-4" />
+                        <span>Historial de Recibos</span>
+                      </button>
+                    )}
+
+                    {/* ESTRICTAMENTE SOLO ADMINISTRADOR: Equipo y Permisos */}
+                    {isAdminAuthenticated && (
+                      <button
+                        type="button"
+                        onClick={() => setAdminSubTab('equipo')}
+                        className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
+                          adminSubTab === 'equipo'
+                            ? 'bg-[#ff7a00] text-white shadow-lg'
+                            : 'text-[#a8a29e] hover:text-[#f5efe6]'
+                        }`}
+                      >
+                        <Users className="w-4 h-4" />
+                        <span>Equipo y Permisos</span>
+                      </button>
+                    )}
                   </div>
 
                 </div>
                 
                 <div className="space-y-6">
+                  {/* Waiter Calls & Solicitudes de Cambio de Mesa (Solo Admin, Mesas o Caja) */}
+                  {(isAdminAuthenticated || canAccessTables || canAccessCashier) && (
+                    <>
                   {/* Waiter Calls */}
                   <div className="bg-[#292524] border border-[#3a3632] rounded-[20px] p-6 space-y-4">
                     <div className="flex items-center justify-between">
@@ -2340,6 +2569,8 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                    </>
+                  )}
 
                   {/* =========================================================================
                    * 📋 INVENTARIO Y GESTIÓN DE PLATOS Y BEBIDAS DEL RESTAURANTE
@@ -2600,8 +2831,8 @@ export default function App() {
                   </div>
                 )}
 
-                {/* SUBTAB 2: Perfil del Restaurante e Identidad de Marca */}
-                {adminSubTab === 'perfil' && (
+                {/* SUBTAB 2: Perfil del Restaurante e Identidad de Marca (Solo Admin) */}
+                {adminSubTab === 'perfil' && isAdminAuthenticated && (
                   <RestaurantProfileAdmin
                     currentProfile={restaurantProfile}
                     onProfileUpdated={(updated) => setRestaurantProfile(updated)}
@@ -2610,8 +2841,28 @@ export default function App() {
                 )}
 
                 {/* SUBTAB 3: Historial de Recibos y Ventas */}
-                {adminSubTab === 'historial' && (
+                {adminSubTab === 'historial' && (isAdminAuthenticated || canAccessReports) && (
                   <TicketHistoryAdmin />
+                )}
+
+                {/* SUBTAB 4: Equipo y Permisos (ESTRICTAMENTE SOLO ADMINISTRADOR) */}
+                {adminSubTab === 'equipo' && isAdminAuthenticated && (
+                  <EquipoYPermisos
+                    isAdminAuthenticated={isAdminAuthenticated}
+                    securityConfig={securityConfig}
+                    collaborators={collaborators}
+                    showToast={showToast}
+                    onMasterPinUpdated={(newPin) => {
+                      if (staffSession?.isMasterAdmin && staffSession.authType === 'pin') {
+                        const updatedSession: StaffSession = {
+                          ...staffSession,
+                          sessionPin: newPin,
+                        };
+                        setStaffSession(updatedSession);
+                        localStorage.setItem('elchuro_staff_session', JSON.stringify(updatedSession));
+                      }
+                    }}
+                  />
                 )}
 
               </div>
@@ -2652,6 +2903,7 @@ export default function App() {
         }}
         isClientMode={isClientMode}
         isStaffAuthenticated={isStaffAuthenticated}
+        canCharge={canAccessCashier}
         staffName={user?.displayName || staffSession?.name || 'Personal'}
         onStaffLoginSuccess={(session) => setStaffSession(session)}
         onCallWaiterForBill={handleCallWaiterForBill}
@@ -2680,6 +2932,9 @@ export default function App() {
         isCartOpen={customerModalOpen}
         isStaffAuthenticated={isStaffAuthenticated}
         isAdminAuthenticated={isAdminAuthenticated}
+        canAccessTables={canAccessTables}
+        canAccessKitchen={canAccessKitchen}
+        canAccessAdmin={canAccessAdminTab}
         onOpenCart={() => {
           setModalMode('cart');
           setCustomerModalOpen(true);

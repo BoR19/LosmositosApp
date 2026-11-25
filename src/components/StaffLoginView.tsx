@@ -1,27 +1,31 @@
 import React, { useState } from 'react';
-import { 
-  ChefHat, 
-  LogIn, 
-  KeyRound, 
-  AlertTriangle, 
-  ExternalLink, 
-  Copy, 
-  Check, 
-  HelpCircle, 
-  X, 
-  ShieldCheck, 
+import {
+  ChefHat,
+  LogIn,
+  KeyRound,
+  AlertTriangle,
+  ExternalLink,
+  Copy,
+  Check,
+  HelpCircle,
+  X,
+  ShieldCheck,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
-import { signInWithPopup } from 'firebase/auth';
+import { signInWithPopup, signOut } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase.ts';
+import { StaffSession } from '../types/index.ts';
+import {
+  ALL_PERMISSION_KEYS,
+  authenticateStaffWithPin,
+  ensureSecurityConfigInitialized,
+  isGoogleUserAdmin,
+} from '../services/staffSecurityService.ts';
 
-export interface StaffSession {
-  name: string;
-  role: 'cocina' | 'admin';
-  authType: 'google' | 'pin';
-  email?: string;
-}
+export type { StaffSession };
 
 interface StaffLoginViewProps {
   onSuccess: (session: StaffSession) => void;
@@ -29,19 +33,22 @@ interface StaffLoginViewProps {
   requiredRole?: string;
 }
 
-export const StaffLoginView: React.FC<StaffLoginViewProps> = ({ 
-  onSuccess, 
+export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
+  onSuccess,
   showToast,
-  requiredRole = 'cocina o administración' 
+  requiredRole = 'el personal autorizado',
 }) => {
   const [pin, setPin] = useState('');
+  const [showPin, setShowPin] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<{ code: string; message: string } | null>(null);
   const [showDomainHelp, setShowDomainHelp] = useState(false);
   const [copied, setCopied] = useState(false);
   const [activeMethod, setActiveMethod] = useState<'pin' | 'google'>('pin');
 
-  const currentDomain = typeof window !== 'undefined' ? window.location.hostname : 'mositope.vercel.app';
+  const currentDomain =
+    typeof window !== 'undefined' ? window.location.hostname : 'mositope.vercel.app';
   const projectId = 'starry-serenity-d6tvw';
   const firebaseSettingsUrl = `https://console.firebase.google.com/project/${projectId}/authentication/settings`;
 
@@ -58,32 +65,50 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const googleUser = result.user;
+
+      // Validar autorización contra configuracion/seguridad (adminsGoogle)
+      const securityConfig = await ensureSecurityConfigInitialized();
+      if (!isGoogleUserAdmin(googleUser.email, securityConfig)) {
+        await signOut(auth);
+        showToast(
+          `La cuenta "${googleUser.email}" no está autorizada como Administrador.`,
+          'error'
+        );
+        return;
+      }
+
       const session: StaffSession = {
-        name: googleUser.displayName || 'Personal Google',
+        name: googleUser.displayName || 'Administrador Google',
         role: 'admin',
+        cargo: 'Administrador',
+        isMasterAdmin: true,
         authType: 'google',
-        email: googleUser.email || undefined
+        email: googleUser.email || undefined,
+        permisos: [...ALL_PERMISSION_KEYS],
       };
       localStorage.setItem('elchuro_staff_session', JSON.stringify(session));
-      showToast(`¡Bienvenido, ${googleUser.displayName || 'Personal'}! ✨`);
+      showToast(`¡Bienvenido, ${session.name}!`);
       onSuccess(session);
     } catch (error: any) {
-      console.error("Error al iniciar sesión con Google:", error);
+      console.error('Error al iniciar sesión con Google:', error);
       if (error?.code === 'auth/unauthorized-domain') {
         setAuthError({
           code: 'auth/unauthorized-domain',
-          message: `El dominio "${currentDomain}" no está en la lista de dominios autorizados de Firebase.`
+          message: `El dominio "${currentDomain}" no está en la lista de dominios autorizados de Firebase.`,
         });
         setShowDomainHelp(true);
       } else if (error?.code === 'auth/popup-closed-by-user') {
         showToast('Ventana de inicio de sesión cerrada.', 'info');
       } else if (error?.code === 'auth/popup-blocked') {
-        showToast('El navegador bloqueó la ventana emergente de Google. Permite ventanas emergentes para este sitio.', 'error');
+        showToast(
+          'El navegador bloqueó la ventana emergente de Google. Permite ventanas emergentes para este sitio.',
+          'error'
+        );
       } else {
         showToast(`Error al autenticar: ${error?.message || error?.code}`, 'error');
         setAuthError({
           code: error?.code || 'unknown',
-          message: error?.message || 'Error al conectar con Google'
+          message: error?.message || 'Error al conectar con Google',
         });
       }
     } finally {
@@ -91,53 +116,27 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
     }
   };
 
-  const handlePinSubmit = (e?: React.FormEvent) => {
+  const handlePinSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const cleanPin = pin.trim();
-
-    if (cleanPin === '1234') {
-      const session: StaffSession = {
-        name: 'Mozo / Cocina',
-        role: 'cocina',
-        authType: 'pin'
-      };
-      localStorage.setItem('elchuro_staff_session', JSON.stringify(session));
-      showToast('¡Acceso concedido a Mesas y Cocina! 🍽️');
-      onSuccess(session);
-    } else if (cleanPin === '7777') {
-      const session: StaffSession = {
-        name: 'Administrador Restaurante',
-        role: 'admin',
-        authType: 'pin'
-      };
-      localStorage.setItem('elchuro_staff_session', JSON.stringify(session));
-      showToast('¡Acceso concedido como Administrador! ⚡');
-      onSuccess(session);
-    } else {
-      showToast('PIN incorrecto. Usa 1234 para Mozo/Cocina o 7777 para Admin.', 'error');
-    }
-  };
-
-  const handleQuickPin = (quickPin: string) => {
-    setPin(quickPin);
-    if (quickPin === '1234') {
-      const session: StaffSession = {
-        name: 'Mozo / Cocina',
-        role: 'cocina',
-        authType: 'pin'
-      };
-      localStorage.setItem('elchuro_staff_session', JSON.stringify(session));
-      showToast('¡Acceso concedido a Mesas y Cocina! 🍽️');
-      onSuccess(session);
-    } else if (quickPin === '7777') {
-      const session: StaffSession = {
-        name: 'Administrador Restaurante',
-        role: 'admin',
-        authType: 'pin'
-      };
-      localStorage.setItem('elchuro_staff_session', JSON.stringify(session));
-      showToast('¡Acceso concedido como Administrador! ⚡');
-      onSuccess(session);
+    setPinError(null);
+    setIsLoggingIn(true);
+    try {
+      const result = await authenticateStaffWithPin(pin);
+      if (result.ok) {
+        const session = result.session;
+        localStorage.setItem('elchuro_staff_session', JSON.stringify(session));
+        showToast(
+          session.isMasterAdmin
+            ? '¡Acceso concedido como Administrador!'
+            : `¡Bienvenido, ${session.name} (${session.cargo})!`
+        );
+        onSuccess(session);
+      } else {
+        setPinError(result.error);
+        showToast(result.error, 'error');
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -164,7 +163,10 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
         <div className="grid grid-cols-2 p-1 bg-[#1c1917] rounded-xl border border-[#3a3632]">
           <button
             type="button"
-            onClick={() => setActiveMethod('pin')}
+            onClick={() => {
+              setActiveMethod('pin');
+              setPinError(null);
+            }}
             className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               activeMethod === 'pin'
                 ? 'bg-[#ff7a00] text-white shadow-md'
@@ -175,7 +177,10 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setActiveMethod('google')}
+            onClick={() => {
+              setActiveMethod('google');
+              setPinError(null);
+            }}
             className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               activeMethod === 'google'
                 ? 'bg-[#ff7a00] text-white shadow-md'
@@ -186,7 +191,7 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
           </button>
         </div>
 
-        {/* Method 1: Staff PIN Form */}
+        {/* Method 1: Staff PIN Form (Firestore Validated) */}
         {activeMethod === 'pin' && (
           <form onSubmit={handlePinSubmit} className="space-y-4">
             <div className="space-y-2">
@@ -194,60 +199,45 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
                 Ingresa tu PIN de Acceso
               </label>
               <div className="relative">
+                <KeyRound className="w-4 h-4 text-[#78716c] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
-                  type="password"
+                  type={showPin ? 'text' : 'password'}
                   inputMode="numeric"
                   pattern="[0-9]*"
-                  maxLength={6}
+                  maxLength={4}
                   value={pin}
-                  onChange={(e) => setPin(e.target.value)}
-                  placeholder="Ej. 1234"
-                  className="w-full bg-[#1c1917] border border-[#3a3632] focus:border-[#ff7a00] focus:ring-1 focus:ring-[#ff7a00] rounded-xl px-4 py-3 text-center text-xl font-mono tracking-[0.3em] text-[#f5efe6] placeholder-[#57534e] outline-none transition-all"
+                  onChange={(e) => {
+                    setPin(e.target.value.replace(/\D/g, '').slice(0, 4));
+                    if (pinError) setPinError(null);
+                  }}
+                  placeholder="• • • •"
+                  className="w-full bg-[#1c1917] border border-[#3a3632] focus:border-[#ff7a00] focus:ring-1 focus:ring-[#ff7a00] rounded-xl px-11 py-3 text-center text-xl font-mono tracking-[0.3em] text-[#f5efe6] placeholder-[#57534e] outline-none transition-all tabular-nums"
                   autoFocus
                 />
-                <KeyRound className="w-4 h-4 text-[#78716c] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <button
+                  type="button"
+                  onClick={() => setShowPin((v) => !v)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#78716c] hover:text-[#f5efe6] transition-colors cursor-pointer"
+                  aria-label={showPin ? 'Ocultar PIN' : 'Mostrar PIN'}
+                >
+                  {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
+              {pinError && (
+                <p className="text-xs text-red-400 font-medium text-center pt-1">
+                  {pinError}
+                </p>
+              )}
             </div>
 
             <button
               type="submit"
-              className="w-full py-3.5 rounded-xl bg-[#ff7a00] hover:bg-[#ff8c1a] active:scale-[0.98] text-white font-bold text-sm shadow-[0_4px_20px_rgba(255,122,0,0.35)] transition-all flex items-center justify-center gap-2 cursor-pointer"
+              disabled={isLoggingIn || pin.trim().length !== 4}
+              className="w-full py-3.5 rounded-xl bg-[#ff7a00] hover:bg-[#ff8c1a] active:scale-[0.98] text-white font-bold text-sm shadow-[0_4px_20px_rgba(255,122,0,0.35)] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
-              <span>Ingresar con PIN</span>
-              <ArrowRight className="w-4 h-4" />
+              <span>{isLoggingIn ? 'Verificando PIN...' : 'Ingresar con PIN'}</span>
+              {!isLoggingIn && <ArrowRight className="w-4 h-4" />}
             </button>
-
-            {/* Quick Preset Buttons for Tablets & Testing */}
-            <div className="pt-2 border-t border-[#3a3632]/60 space-y-2">
-              <span className="text-[11px] text-[#78716c] block text-center font-medium">
-                Acceso Rápido por Rol:
-              </span>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleQuickPin('1234')}
-                  className="p-2.5 rounded-xl bg-[#1c1917] hover:bg-[#3a3632] border border-[#3a3632] text-left transition-colors cursor-pointer group"
-                >
-                  <div className="text-[11px] font-bold text-[#f5efe6] group-hover:text-[#ff7a00] flex items-center justify-between">
-                    <span>Mozo y Cocina</span>
-                    <span className="font-mono text-[10px] bg-[#292524] px-1.5 py-0.5 rounded text-[#a8a29e]">1234</span>
-                  </div>
-                  <span className="text-[10px] text-[#78716c]">Mesas, KDS y comandas</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleQuickPin('7777')}
-                  className="p-2.5 rounded-xl bg-[#1c1917] hover:bg-[#3a3632] border border-[#3a3632] text-left transition-colors cursor-pointer group"
-                >
-                  <div className="text-[11px] font-bold text-[#f5efe6] group-hover:text-[#ff7a00] flex items-center justify-between">
-                    <span>Administrador</span>
-                    <span className="font-mono text-[10px] bg-[#292524] px-1.5 py-0.5 rounded text-[#a8a29e]">7777</span>
-                  </div>
-                  <span className="text-[10px] text-[#78716c]">Mesas, KDS y menú</span>
-                </button>
-              </div>
-            </div>
           </form>
         )}
 
@@ -281,7 +271,6 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
               <span>{isLoggingIn ? 'Conectando con Google...' : 'Continuar con Google'}</span>
             </button>
 
-            {/* Error banner if domain not authorized */}
             {authError && (
               <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 space-y-2 text-left">
                 <div className="flex items-start gap-2.5">
@@ -308,7 +297,7 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
                     onClick={() => setActiveMethod('pin')}
                     className="text-[11px] font-bold text-[#ff7a00] hover:underline cursor-pointer"
                   >
-                    Usar PIN inmediato
+                    Usar PIN de Restaurante
                   </button>
                 </div>
               </div>
@@ -321,7 +310,7 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
                 className="text-xs text-[#a8a29e] hover:text-[#f5efe6] flex items-center justify-center gap-1 mx-auto cursor-pointer"
               >
                 <HelpCircle className="w-3.5 h-3.5" />
-                <span>¿Error auth/unauthorized-domain en Vercel? Ver solución</span>
+                <span>¿Error auth/unauthorized-domain? Ver solución</span>
               </button>
             </div>
           </div>
@@ -369,8 +358,8 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
             </div>
 
             <div className="space-y-3 text-xs text-[#d6d3d1] leading-relaxed">
-              <p className="font-semibold text-[#f5efe6]">Pasos para habilitar Google Login en Vercel:</p>
-              
+              <p className="font-semibold text-[#f5efe6]">Pasos para habilitar Google Login:</p>
+
               <ol className="space-y-2 list-decimal list-inside bg-[#1c1917] p-4 rounded-xl border border-[#3a3632]">
                 <li className="space-y-1">
                   <span>Entra a Firebase Console en la sección de Ajustes:</span>
@@ -399,7 +388,7 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
                   <Sparkles className="w-4 h-4 text-emerald-400" /> ¿Necesitas entrar ya mismo?
                 </span>
                 <p className="text-[11px] text-emerald-300/90 mt-1">
-                  No necesitas esperar a configurar Firebase: puedes entrar de inmediato usando el <strong>PIN de Personal</strong> (<code className="font-bold text-white">1234</code> para Mozo y Cocina o <code className="font-bold text-white">7777</code> para Admin).
+                  Puedes ingresar de inmediato usando el <strong>PIN de Restaurante</strong> de 4 dígitos asignado por el Administrador.
                 </p>
               </div>
             </div>

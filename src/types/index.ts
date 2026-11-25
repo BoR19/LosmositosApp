@@ -101,6 +101,41 @@ export interface SolicitudCambio {
   estado: 'pendiente' | 'completado' | 'cancelado';
   createdAt?: any;
   atendidoAt?: any;
+  cliente_nombre?: string;
 }
+
+export type PermissionKey = 'mesas' | 'cocina' | 'caja' | 'menu_admin' | 'reportes';
+
+export type StaffCargo = 'Mozo' | 'Cocina' | 'Cajero';
+
+export interface Collaborator {
+  id: string;
+  nombre: string;
+  cargo: StaffCargo;
+  pin: string;
+  activo: boolean;
+  permisos: PermissionKey[];
+  creadoEn?: any;
+  actualizadoEn?: any;
+}
+
+export interface SecurityConfig {
+  pinMaestro: string;
+  adminsGoogle?: string[];
+  updatedAt?: any;
+}
+
+export interface StaffSession {
+  name: string;
+  role: 'admin' | 'staff' | 'cocina';
+  cargo?: StaffCargo | 'Administrador';
+  isMasterAdmin: boolean;
+  collaboratorId?: string;
+  authType: 'google' | 'pin';
+  email?: string;
+  permisos: PermissionKey[];
+  sessionPin?: string;
+}
+
 
 

@@ -9,6 +9,7 @@ import { doc, getDoc, addDoc, collection, serverTimestamp } from 'firebase/fires
 import { db } from '../firebase';
 import { CartItem, Table, Order } from '../types/index.ts';
 import { formatTableOptionLabel } from '../data/menuData.ts';
+import { authenticateStaffWithPin } from '../services/staffSecurityService.ts';
 
 interface CartModalProps {
   isOpen: boolean;
@@ -30,6 +31,7 @@ interface CartModalProps {
   onSwitchToBill?: () => void;
   isClientMode?: boolean;
   isStaffAuthenticated?: boolean;
+  canCharge?: boolean;
   staffName?: string;
   onStaffLoginSuccess?: (session: any) => void;
   onCallWaiterForBill?: () => void;
@@ -56,6 +58,7 @@ export const CartModal: React.FC<CartModalProps> = ({
   onSwitchToBill,
   isClientMode: propIsClientMode,
   isStaffAuthenticated = false,
+  canCharge = true,
   staffName = 'Personal',
   onStaffLoginSuccess,
   onCallWaiterForBill,
@@ -66,17 +69,13 @@ export const CartModal: React.FC<CartModalProps> = ({
 
   // Detect staff vs client mode
   const mesaQR = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('mesa') : null;
-  const isStaff = isStaffAuthenticated || 
-    (typeof localStorage !== 'undefined' && (
-      localStorage.getItem('admin_role') === 'mozo' || 
-      localStorage.getItem('admin_role') === 'admin' || 
-      localStorage.getItem('admin_role') === 'cajero' ||
-      localStorage.getItem('churo_role') === 'staff'
-    )) ||
+  const isStaff = Boolean(
+    isStaffAuthenticated ||
     (typeof window !== 'undefined' && (
       window.location.pathname.includes('/admin') || 
       window.location.pathname.includes('/mesas')
-    ));
+    ))
+  );
   const isClient = propIsClientMode !== undefined 
     ? propIsClientMode 
     : Boolean(!isStaff && (mesaQR || (typeof localStorage !== 'undefined' && localStorage.getItem('churo_mesa'))));
@@ -177,24 +176,26 @@ export const CartModal: React.FC<CartModalProps> = ({
   const montoFaltante = isUnderpaid ? (totalToShow - cashNum).toFixed(2) : '0.00';
   const montoVuelto = isPaidOrOver ? (cashNum - totalToShow).toFixed(2) : '0.00';
 
-  // Quick PIN submit inside modal
-  const handleInlinePinSubmit = (e: React.FormEvent) => {
+  const [isVerifyingInlinePin, setIsVerifyingInlinePin] = useState<boolean>(false);
+
+  // Quick PIN submit inside modal (validated against Firestore)
+  const handleInlinePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const clean = inlinePin.trim();
-    if (clean === '7777') {
-      const session = { name: 'Administrador', role: 'admin' as const, authType: 'pin' as const };
-      localStorage.setItem('elchuro_staff_session', JSON.stringify(session));
-      if (onStaffLoginSuccess) onStaffLoginSuccess(session);
-      setShowInlinePin(false);
-      setPinError(null);
-    } else if (clean === '1234') {
-      const session = { name: 'Personal de Cocina / Mozo', role: 'cocina' as const, authType: 'pin' as const };
-      localStorage.setItem('elchuro_staff_session', JSON.stringify(session));
-      if (onStaffLoginSuccess) onStaffLoginSuccess(session);
-      setShowInlinePin(false);
-      setPinError(null);
-    } else {
-      setPinError('PIN incorrecto. (Admin: 7777 | Mozo: 1234)');
+    setPinError(null);
+    setIsVerifyingInlinePin(true);
+    try {
+      const result = await authenticateStaffWithPin(inlinePin);
+      if (result.ok) {
+        localStorage.setItem('elchuro_staff_session', JSON.stringify(result.session));
+        if (onStaffLoginSuccess) onStaffLoginSuccess(result.session);
+        setShowInlinePin(false);
+        setInlinePin('');
+        setPinError(null);
+      } else {
+        setPinError(result.error);
+      }
+    } finally {
+      setIsVerifyingInlinePin(false);
     }
   };
 
@@ -559,8 +560,8 @@ Gastronomía de Altura • Tarija`;
               {modalMode === 'bill' && (
                 <div className="pt-3 space-y-4 border-t border-[#3a3632]">
                   
-                  {/* CASO A: PERSONAL AUTORIZADO (PIN / ADMIN / MOZO) */}
-                  {isStaffAuthenticated ? (
+                  {/* CASO A: PERSONAL AUTORIZADO CON PERMISO DE CAJA */}
+                  {isStaffAuthenticated && canCharge ? (
                     <div className="space-y-4">
                       {/* Pestañas de Método de Cobro */}
                       <div className="flex rounded-xl bg-[#292524] p-1 border border-[#3a3632]">
@@ -886,18 +887,20 @@ Gastronomía de Altura • Tarija`;
                             <div className="flex gap-2">
                               <input
                                 type="password"
-                                maxLength={6}
-                                placeholder="PIN (ej: 7777 o 1234)"
+                                inputMode="numeric"
+                                maxLength={4}
+                                placeholder="PIN de 4 dígitos"
                                 value={inlinePin}
-                                onChange={(e) => setInlinePin(e.target.value)}
-                                className="flex-1 bg-[#292524] border border-[#3a3632] rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-[#ff7a00]"
+                                onChange={(e) => setInlinePin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                                className="flex-1 bg-[#292524] border border-[#3a3632] rounded-lg px-3 py-1.5 text-xs text-white font-mono tracking-widest focus:outline-none focus:border-[#ff7a00]"
                                 autoFocus
                               />
                               <button
                                 type="submit"
-                                className="px-3.5 py-1.5 bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-bold text-xs rounded-lg cursor-pointer"
+                                disabled={isVerifyingInlinePin}
+                                className="px-3.5 py-1.5 bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-bold text-xs rounded-lg cursor-pointer disabled:opacity-50"
                               >
-                                Acceder
+                                {isVerifyingInlinePin ? '...' : 'Acceder'}
                               </button>
                             </div>
                             {pinError && (

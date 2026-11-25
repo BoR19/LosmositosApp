@@ -14,6 +14,9 @@ interface MobileDockProps {
   isCartOpen: boolean;
   isStaffAuthenticated?: boolean;
   isAdminAuthenticated?: boolean;
+  canAccessTables?: boolean;
+  canAccessKitchen?: boolean;
+  canAccessAdmin?: boolean;
 }
 
 export const MobileDock: React.FC<MobileDockProps> = ({
@@ -28,6 +31,9 @@ export const MobileDock: React.FC<MobileDockProps> = ({
   isCartOpen,
   isStaffAuthenticated = false,
   isAdminAuthenticated = false,
+  canAccessTables = true,
+  canAccessKitchen = true,
+  canAccessAdmin = true,
 }) => {
   const totalCartCount = cart.reduce((s, i) => s + i.qty, 0);
   const activeOrdersCount = orders.filter(
@@ -36,26 +42,16 @@ export const MobileDock: React.FC<MobileDockProps> = ({
 
   // Lista de todas las secciones disponibles en la aplicación
   const allTabs = [
-    { id: 'welcome', label: 'Inicio', icon: Home, isAction: true, isStaff: false },
-    { id: 'menu', label: 'Menú', icon: Utensils, isAction: false, isStaff: false },
-    { id: 'cart-tab', label: 'Carrito', icon: ShoppingBag, isAction: true, isStaff: false },
-    { id: 'tables', label: 'Mesas', icon: QrCode, isAction: false, isStaff: true },
-    { id: 'kitchen', label: 'Cocina', icon: ChefHat, isAction: false, isStaff: true },
-    { id: 'admin', label: 'Admin', icon: Layers, isAction: false, isStaff: true },
+    { id: 'welcome', label: 'Inicio', icon: Home, isAction: true, isStaff: false, allowed: true },
+    { id: 'menu', label: 'Menú', icon: Utensils, isAction: false, isStaff: false, allowed: true },
+    { id: 'cart-tab', label: 'Carrito', icon: ShoppingBag, isAction: true, isStaff: false, allowed: true },
+    { id: 'tables', label: 'Mesas', icon: QrCode, isAction: false, isStaff: true, allowed: isAdminAuthenticated || canAccessTables },
+    { id: 'kitchen', label: 'Cocina', icon: ChefHat, isAction: false, isStaff: true, allowed: isAdminAuthenticated || canAccessKitchen },
+    { id: 'admin', label: 'Admin', icon: Layers, isAction: false, isStaff: true, allowed: isAdminAuthenticated || canAccessAdmin },
   ];
 
-  /**
-   * REGLAS DE ACCESO PARA LA BARRA DE NAVEGACIÓN INFERIOR (BottomNav):
-   * 
-   * 1. SI EL USUARIO ES CLIENTE (Ingresó por QR de mesa sin sesión de personal activa):
-   *    - Muestra los botones de "Inicio" (casita de bienvenida), "Menú" y "Carrito".
-   *    - Oculta los botones de "Mesas", "Cocina" y "Admin" para que el cliente no tenga distracciones.
-   * 
-   * 2. SI EL USUARIO ES PERSONAL / ADMIN (Inició sesión con PIN o rol autorizado):
-   *    - Muestra la barra completa con todas las herramientas de trabajo.
-   */
   const visibleTabs = isStaffAuthenticated
-    ? allTabs
+    ? allTabs.filter((tab) => !tab.isStaff || tab.allowed)
     : allTabs.filter((tab) => !tab.isStaff);
 
   return (
