@@ -98,6 +98,7 @@ export const CartModal: React.FC<CartModalProps> = ({
   const [tipoEntrega, setTipoEntrega] = useState<'whatsapp' | 'ticket' | 'ambas'>('ambas');
   const [clienteCelular, setClienteCelular] = useState<string>('');
   const [isConfirmingDelivery, setIsConfirmingDelivery] = useState<boolean>(false);
+  const [isVerifyingInlinePin, setIsVerifyingInlinePin] = useState<boolean>(false);
 
   // Cargar número de celular del cliente (localStorage o Firestore mesas_activas)
   useEffect(() => {
@@ -175,8 +176,6 @@ export const CartModal: React.FC<CartModalProps> = ({
 
   const montoFaltante = isUnderpaid ? (totalToShow - cashNum).toFixed(2) : '0.00';
   const montoVuelto = isPaidOrOver ? (cashNum - totalToShow).toFixed(2) : '0.00';
-
-  const [isVerifyingInlinePin, setIsVerifyingInlinePin] = useState<boolean>(false);
 
   // Quick PIN submit inside modal (validated against Firestore)
   const handleInlinePinSubmit = async (e: React.FormEvent) => {

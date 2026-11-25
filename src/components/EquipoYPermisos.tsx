@@ -51,9 +51,6 @@ export const EquipoYPermisos: React.FC<EquipoYPermisosProps> = ({
   showToast,
   onMasterPinUpdated,
 }) => {
-  // Defense-in-depth: never render for non-administrators
-  if (!isAdminAuthenticated) return null;
-
   // Master PIN state
   const [masterPinInput, setMasterPinInput] = useState(securityConfig.pinMaestro || '7777');
   const [showMasterPin, setShowMasterPin] = useState(false);
@@ -271,6 +268,9 @@ export const EquipoYPermisos: React.FC<EquipoYPermisosProps> = ({
   const googleAdmins = securityConfig.adminsGoogle || [];
   const masterPinChanged =
     masterPinInput.trim() !== (securityConfig.pinMaestro || '7777');
+
+  // Defense-in-depth: never render for non-administrators
+  if (!isAdminAuthenticated) return null;
 
   return (
     <div className="space-y-6 animate-fadeIn">
