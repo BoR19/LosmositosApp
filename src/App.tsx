@@ -26,6 +26,13 @@ import { TicketHistoryAdmin } from './components/TicketHistoryAdmin.tsx';
 import { RequestTableChangeModal, MoveTableStaffModal, ClientConfirmMoveModal } from './components/TableChangeModals.tsx';
 import { EquipoYPermisos } from './components/EquipoYPermisos.tsx';
 import { PosSidebar } from './components/PosSidebar.tsx';
+import { ClientTopBar } from './components/ClientTopBar.tsx';
+import {
+  clearClientSessionStorage,
+  isTableDataFree,
+  liberarMesaYReiniciarSesion,
+  generateTableSessionId,
+} from './services/tableSessionService.ts';
 import {
   subscribeSecurityConfig,
   subscribeCollaborators,
@@ -238,6 +245,22 @@ export default function App() {
     return 'inventario';
   });
 
+  const [clientPhone, setClientPhone] = useState<string>(() => {
+    try {
+      return typeof localStorage !== 'undefined' ? localStorage.getItem('churo_celular') || '' : '';
+    } catch {
+      return '';
+    }
+  });
+  const [activeClientSessionId, setActiveClientSessionId] = useState<string | null>(() => {
+    try {
+      return typeof localStorage !== 'undefined' ? localStorage.getItem('churo_sesion_id') || null : null;
+    } catch {
+      return null;
+    }
+  });
+  const [sessionClosedMesa, setSessionClosedMesa] = useState<number | null>(null);
+
   // Estado para la pantalla de bienvenida y captura de WhatsApp al escanear QR (?mesa=X)
   const [showWelcomeScreen, setShowWelcomeScreen] = useState<boolean>(() => {
     try {
@@ -247,18 +270,15 @@ export default function App() {
         const mesaNumStr = String(mesaParam);
         const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${mesaNumStr}`) === 'true' || 
                                    sessionStorage.getItem(`churo_welcome_dismissed_${mesaNumStr}`) === 'true';
-        const savedPhone = localStorage.getItem('churo_celular');
         const storedMesa = localStorage.getItem('churo_mesa');
+        const storedSessionId = localStorage.getItem('churo_sesion_id');
         const sesionActiva = localStorage.getItem('churo_sesion_activa');
 
-        // Si ya completó la bienvenida en esta sesión de pestaña para esta mesa específica:
-        if (welcomeDoneSession) {
+        if (welcomeDoneSession && storedSessionId && storedMesa === mesaNumStr && sesionActiva !== 'false') {
           return false;
         }
 
-        // Al mostrar bienvenida, si churo_sesion_activa === 'false' (pagó antes) o mesaParam != storedMesa,
-        // permite escanear cualquier mesa nueva de inmediato y mostrar bienvenida limpia
-        if (sesionActiva === 'false' || storedMesa !== mesaNumStr || !savedPhone) {
+        if (sesionActiva === 'false' || storedMesa !== mesaNumStr || !storedSessionId) {
           return true;
         }
 
@@ -390,7 +410,10 @@ export default function App() {
             await setDoc(doc(db, 'mesas', String(item.id)), {
               id: item.id,
               name: item.name,
-              seats: item.seats
+              seats: item.seats,
+              status: 'free',
+              estado: 'libre',
+              sesionActivaId: null,
             });
           } catch (e) {
             console.error("Error al sembrar mesa inicial:", e);
@@ -404,6 +427,8 @@ export default function App() {
             name: data.name || `Mesa ${d.id}`,
             seats: Number(data.seats || 4),
             status: 'free' as const,
+            estado: (data.estado === 'ocupada' ? 'ocupada' : 'libre') as 'libre' | 'ocupada',
+            sesionActivaId: data.sesionActivaId ?? null,
             currentOrder: null
           };
         }).sort((a, b) => a.id - b.id);
@@ -634,6 +659,14 @@ export default function App() {
           const ultimaMesa = clientData?.ultima_mesa;
           const currentMesaStored = Number(localStorage.getItem('churo_mesa') || currentTableId);
           if (ultimaMesa && !isNaN(Number(ultimaMesa)) && Number(ultimaMesa) !== currentMesaStored) {
+            try {
+              const destSnap = await getDoc(doc(db, 'mesas', String(ultimaMesa)));
+              if (destSnap.exists() && destSnap.data().sesionActivaId) {
+                localStorage.setItem('churo_sesion_id', String(destSnap.data().sesionActivaId));
+              }
+            } catch {
+              // ignore
+            }
             localStorage.setItem('churo_mesa', String(ultimaMesa));
             const newUrl = new URL(window.location.href);
             newUrl.searchParams.set('mesa', String(ultimaMesa));
@@ -652,23 +685,93 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [isClientMode, currentTableId]);
 
-  // Detect Mesa from URL query params (e.g. ?mesa=3) with Best Practice session lifecycle
+  // Validación y limpieza en tiempo real de la sesión de mesa del cliente (onSnapshot en mesas/{mesaId})
+  useEffect(() => {
+    if (isStaff) return;
+    const targetMesaId = mesaQR ?? currentTableId;
+    if (targetMesaId === null) return;
+
+    const mesaDocRef = doc(db, 'mesas', String(targetMesaId));
+    const unsubscribeMesaSession = onSnapshot(
+      mesaDocRef,
+      (snap) => {
+        if (clientMovePrompt?.isOpen) return;
+        const data = snap.exists() ? snap.data() : null;
+        const liveSessionId = typeof data?.sesionActivaId === 'string' ? data.sesionActivaId : null;
+        const tableIsFree = isTableDataFree(data);
+
+        const localSessionId = localStorage.getItem('churo_sesion_id');
+        const localMesa = localStorage.getItem('churo_mesa');
+        const hadActiveLocalSession = Boolean(
+          localSessionId && localMesa === String(targetMesaId)
+        );
+
+        // 1. Si el cliente tenía la pestaña abierta con sesión activa y el cajero liberó la mesa:
+        if (
+          hadActiveLocalSession &&
+          !showWelcomeScreen &&
+          sessionClosedMesa === null &&
+          (tableIsFree || (liveSessionId && liveSessionId !== localSessionId))
+        ) {
+          clearClientSessionStorage(targetMesaId);
+          setCart([]);
+          setClientPhone('');
+          setActiveClientSessionId(null);
+          setCustomerModalOpen(false);
+          setIsRequestChangeModalOpen(false);
+          setSessionClosedMesa(targetMesaId);
+          return;
+        }
+
+        // 2. Si el cliente escanea el QR de una mesa libre o con sesionActivaId distinta a su localStorage:
+        if (
+          !showWelcomeScreen &&
+          sessionClosedMesa === null &&
+          (tableIsFree || !localSessionId || liveSessionId !== localSessionId || localMesa !== String(targetMesaId))
+        ) {
+          clearClientSessionStorage(targetMesaId);
+          setCart([]);
+          setClientPhone('');
+          setActiveClientSessionId(null);
+          setShowWelcomeScreen(true);
+          return;
+        }
+
+        // 3. Sesión válida coincidente
+        if (liveSessionId && localSessionId === liveSessionId && localMesa === String(targetMesaId)) {
+          setActiveClientSessionId(liveSessionId);
+          const storedPhone = localStorage.getItem('churo_celular') || '';
+          if (storedPhone !== clientPhone) {
+            setClientPhone(storedPhone);
+          }
+        }
+      },
+      (err) => {
+        console.log('Usando localStorage fallback (mesa session listener):', err);
+      }
+    );
+
+    return () => unsubscribeMesaSession();
+  }, [isStaff, mesaQR, currentTableId, showWelcomeScreen, sessionClosedMesa, clientMovePrompt?.isOpen]);
+
+  // Detect Mesa from URL query params (e.g. ?mesa=3) with sesionActivaId session lifecycle
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const urlMesa = params.get('mesa');
       const storedMesa = localStorage.getItem('churo_mesa');
       const sesionActiva = localStorage.getItem('churo_sesion_activa');
-      const savedPhone = localStorage.getItem('churo_celular');
+      const storedSessionId = localStorage.getItem('churo_sesion_id');
 
       // Fallback: si churo_fecha > 4 horas y nunca pagó, limpia carrito
       const fechaRef = localStorage.getItem('churo_fecha_inicio') || localStorage.getItem('churo_fecha');
       if (fechaRef) {
         const elapsed = (Date.now() - new Date(fechaRef).getTime()) / (1000 * 60 * 60);
         if (elapsed > 4) {
-          localStorage.removeItem('churo_carrito');
-          localStorage.setItem('churo_sesion_activa', 'false');
+          clearClientSessionStorage(currentTableId);
           setCart([]);
+          setClientPhone('');
+          setActiveClientSessionId(null);
         }
       }
 
@@ -682,7 +785,7 @@ export default function App() {
       if (urlMesa && !isNaN(Number(urlMesa))) {
         const urlMesaNum = Number(urlMesa);
 
-        // Si mesaParam != storedMesa:
+        // Si cambió de mesa teniendo comanda activa en otra mesa:
         if (storedMesa && storedMesa !== urlMesa) {
           const storedMesaNum = Number(storedMesa);
           const activeOrderOldMesa = orders.find(
@@ -692,8 +795,6 @@ export default function App() {
           );
 
           if (activeOrderOldMesa) {
-            // Cliente tiene comanda activa en la mesa anterior:
-            // Mostrar modal "¿Moverte de Mesa X a Mesa Y?" en vez de bienvenida normal
             setShowWelcomeScreen(false);
             setClientMovePrompt({
               isOpen: true,
@@ -703,28 +804,24 @@ export default function App() {
             return;
           }
 
+          clearClientSessionStorage(storedMesaNum);
           localStorage.setItem('churo_mesa', urlMesa);
-          localStorage.removeItem('churo_carrito');
           setCart([]);
-        } else if (!storedMesa) {
-          localStorage.setItem('churo_mesa', urlMesa);
+          setClientPhone('');
+          setActiveClientSessionId(null);
         }
 
         // Usa siempre searchParams.get('mesa') como verdad para mostrar Mesa X
         setCurrentTableId(urlMesaNum);
 
-        // Al mostrar bienvenida, si churo_sesion_activa === 'false', permite escanear cualquier mesa nueva de inmediato
-        const welcomeDoneSession = sessionStorage.getItem(`welcome_done_${urlMesa}`) === 'true' || 
-                                   sessionStorage.getItem(`churo_welcome_dismissed_${urlMesa}`) === 'true';
-
-        if (!welcomeDoneSession) {
-          if (sesionActiva === 'false' || storedMesa !== urlMesa || !savedPhone) {
+        // Si no hay sesionActivaId o la sesión fue cerrada, mostrar bienvenida limpia
+        if (!storedSessionId || sesionActiva === 'false' || storedMesa !== urlMesa) {
+          if (sessionClosedMesa === null) {
             setShowWelcomeScreen(true);
           }
         }
       } else if (storedMesa && !isNaN(Number(storedMesa))) {
-        // Fallback a mesa guardada solo si la sesión sigue activa y no se ha pagado
-        if (sesionActiva !== 'false') {
+        if (sesionActiva !== 'false' && storedSessionId) {
           setCurrentTableId(Number(storedMesa));
         }
       }
@@ -920,6 +1017,20 @@ export default function App() {
 
       try {
         await addDoc(collection(db, 'pedidos'), newOrder);
+        // Asegura que la mesa en Firestore figure ocupada con sesionActivaId
+        const ensuredSessionId = tableObj.sesionActivaId || generateTableSessionId(tableObj.id);
+        await setDoc(
+          doc(db, 'mesas', String(tableObj.id)),
+          {
+            id: tableObj.id,
+            name: tableObj.name,
+            seats: tableObj.seats,
+            status: 'occupied',
+            estado: 'ocupada',
+            sesionActivaId: ensuredSessionId,
+          },
+          { merge: true }
+        );
         setCart([]);
         setCustomerModalOpen(false);
         showToast(`¡Pedido de ${tableObj.name} enviado a cocina con éxito! 🍲`);
@@ -1298,63 +1409,44 @@ export default function App() {
       showToast("Mesa no válida.", "error");
       return;
     }
-    const activeOrder = orders.find(
-      o => o.tableId === tableObj.id && 
-      o.status !== 'pagado' && 
+
+    const activeOrdersForTable = orders.filter(
+      o => o.tableId === tableObj.id &&
+      o.status !== 'pagado' &&
       o.status !== 'cancelado'
     );
 
     try {
-      if (activeOrder) {
-        const cleanDiscount = Math.max(0, Math.min(discountBs, activeOrder.total));
-        const finalTotal = Number((activeOrder.total - cleanDiscount).toFixed(2));
-        await updateDoc(doc(db, 'pedidos', activeOrder.id), {
-          status: 'pagado',
-          paidAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          paymentMethod: method,
-          ...(cleanDiscount > 0 ? { discountBs: cleanDiscount, total: finalTotal } : {})
-        });
-      }
-      // Actualizar mesa en Firestore a libre
-      await updateDoc(doc(db, 'mesas', String(tableObj.id)), {
-        status: 'free',
-        currentOrder: null
+      await liberarMesaYReiniciarSesion({
+        tableId: tableObj.id,
+        tableName: tableObj.name,
+        tableSeats: tableObj.seats,
+        ordersToClose: activeOrdersForTable,
+        method,
+        discountBs,
       });
-
-      // Evento de pago y liberación de sesión: BEST PRACTICE
-      try {
-        const mesaActual = String(tableObj.id);
-        localStorage.setItem('churo_sesion_activa', 'false');
-        localStorage.removeItem('churo_carrito');
-        localStorage.setItem('churo_ultima_mesa', mesaActual);
-        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
-        localStorage.removeItem('churo_fecha_inicio');
-        // Mantén churo_celular para pre-llenar la próxima vez
-      } catch (stErr) {
-        console.warn("Storage update error on payment:", stErr);
-      }
-      setCart([]);
 
       // Limpiar llamadas de mozo de esta mesa
       waiterCalls.filter(c => c.tableId === tableObj.id).forEach(c => attendWaiterCall(c.id));
-      setTables(prev => prev.map(t => t.id === tableObj.id ? { ...t, status: 'free', currentOrder: null } : t));
+      setTables(prev =>
+        prev.map(t =>
+          t.id === tableObj.id
+            ? { ...t, status: 'free', estado: 'libre', sesionActivaId: null, currentOrder: null }
+            : t
+        )
+      );
       setCustomerModalOpen(false);
       setCashAmount('');
-      showToast(`¡Pago con ${method} confirmado! Mesa #${tableObj.id} cobrada y liberada. ✨`);
+      showToast(`¡Pago con ${method} confirmado! Mesa #${tableObj.id} cobrada, liberada y reiniciada. ✨`);
     } catch (e) {
       console.error("Error al registrar pago y liberar mesa:", e);
-      try {
-        const mesaActual = String(tableObj.id);
-        localStorage.setItem('churo_sesion_activa', 'false');
-        localStorage.removeItem('churo_carrito');
-        localStorage.setItem('churo_ultima_mesa', mesaActual);
-        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
-        localStorage.removeItem('churo_fecha_inicio');
-      } catch {
-        // ignore
-      }
-      setCart([]);
-      setTables(prev => prev.map(t => t.id === tableObj.id ? { ...t, status: 'free', currentOrder: null } : t));
+      setTables(prev =>
+        prev.map(t =>
+          t.id === tableObj.id
+            ? { ...t, status: 'free', estado: 'libre', sesionActivaId: null, currentOrder: null }
+            : t
+        )
+      );
       setCustomerModalOpen(false);
       setCashAmount('');
       showToast(`¡Pago con ${method} registrado! Mesa #${tableObj.id} liberada. ✨`);
@@ -1367,56 +1459,41 @@ export default function App() {
       showToast("Acceso denegado. Se requiere permiso de Caja y Cobros para cobrar la mesa.", "error");
       return;
     }
-    // Clear pending calls for this table
     waiterCalls.filter(c => c.tableId === tableId).forEach(c => attendWaiterCall(c.id));
 
-    const orderToPay = orders.find(
-      o => o.tableId === tableId && 
-      o.status !== 'pagado' && 
+    const tableObj = tables.find(t => t.id === tableId);
+    const activeOrdersForTable = orders.filter(
+      o => o.tableId === tableId &&
+      o.status !== 'pagado' &&
       o.status !== 'cancelado'
     );
 
     try {
-      if (orderToPay) {
-        await updateDoc(doc(db, 'pedidos', orderToPay.id), {
-          status: 'pagado',
-          paidAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          paymentMethod: 'EFECTIVO'
-        });
-      }
-      await updateDoc(doc(db, 'mesas', String(tableId)), {
-        status: 'free',
-        currentOrder: null
+      await liberarMesaYReiniciarSesion({
+        tableId,
+        tableName: tableObj?.name,
+        tableSeats: tableObj?.seats,
+        ordersToClose: activeOrdersForTable,
+        method: 'EFECTIVO',
       });
 
-      // Evento de pago y liberación de sesión: BEST PRACTICE
-      try {
-        const mesaActual = String(tableId);
-        localStorage.setItem('churo_sesion_activa', 'false');
-        localStorage.removeItem('churo_carrito');
-        localStorage.setItem('churo_ultima_mesa', mesaActual);
-        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
-        localStorage.removeItem('churo_fecha_inicio');
-      } catch (stErr) {
-        console.warn("Storage update error on table liberation:", stErr);
-      }
-      setCart([]);
-
-      setTables(prev => prev.map(t => t.id === tableId ? { ...t, status: 'free', currentOrder: null } : t));
-      showToast(`Mesa #${tableId} cobrada y liberada con éxito.`);
+      setTables(prev =>
+        prev.map(t =>
+          t.id === tableId
+            ? { ...t, status: 'free', estado: 'libre', sesionActivaId: null, currentOrder: null }
+            : t
+        )
+      );
+      showToast(`Mesa #${tableId} cobrada, liberada y reiniciada con éxito.`);
     } catch (e) {
       console.error("Error al liberar mesa:", e);
-      try {
-        const mesaActual = String(tableId);
-        localStorage.setItem('churo_sesion_activa', 'false');
-        localStorage.removeItem('churo_carrito');
-        localStorage.setItem('churo_ultima_mesa', mesaActual);
-        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
-      } catch {
-        // ignore
-      }
-      setCart([]);
-      setTables(prev => prev.map(t => t.id === tableId ? { ...t, status: 'free', currentOrder: null } : t));
+      setTables(prev =>
+        prev.map(t =>
+          t.id === tableId
+            ? { ...t, status: 'free', estado: 'libre', sesionActivaId: null, currentOrder: null }
+            : t
+        )
+      );
       showToast(`Mesa #${tableId} liberada.`);
     }
   };
@@ -1510,10 +1587,16 @@ export default function App() {
         o.status !== 'cancelado'
       );
 
+      const carriedSessionId =
+        sourceData?.sesionActivaId ||
+        sourceTable?.sesionActivaId ||
+        generateTableSessionId(targetTableId);
+
       // b) Escribe esa comanda en mesas_activas/mesa_destino
       const targetMesaActivaRef = doc(db, 'mesas_activas', `mesa_${targetTableId}`);
       await setDoc(targetMesaActivaRef, {
         mesa: targetTableId,
+        sesionActivaId: carriedSessionId,
         cliente_celular: clienteCelular,
         cliente_llego: sourceData?.cliente_llego || serverTimestamp(),
         trasladado_desde: sourceTableId,
@@ -1531,7 +1614,7 @@ export default function App() {
         });
       }
 
-      // d) Borra o marca mesa_origen como LIBRE
+      // d) Borra o marca mesa_origen como LIBRE y resetea su sesionActivaId
       try {
         await deleteDoc(sourceMesaActivaRef);
       } catch (delErr) {
@@ -1539,13 +1622,17 @@ export default function App() {
       }
       await updateDoc(doc(db, 'mesas', String(sourceTableId)), {
         status: 'free',
+        estado: 'libre',
+        sesionActivaId: null,
         currentOrder: null
       });
 
-      // e) Marca mesa_destino como OCUPADA (o por-pagar según corresponda)
+      // e) Marca mesa_destino como OCUPADA (o por-pagar según corresponda) con la sesionActivaId trasladada
       const targetStatus = activeOrder?.status === 'por-pagar' ? 'por-pagar' : 'occupied';
       await updateDoc(doc(db, 'mesas', String(targetTableId)), {
         status: targetStatus,
+        estado: 'ocupada',
+        sesionActivaId: carriedSessionId,
         currentOrder: activeOrder ? { ...activeOrder, tableId: targetTableId, tableName: targetTableName } : null
       });
 
@@ -1611,7 +1698,9 @@ export default function App() {
         id: newTable.id,
         name: newTable.name,
         seats: newTable.seats,
-        status: 'free'
+        status: 'free',
+        estado: 'libre',
+        sesionActivaId: null,
       });
       setTables(prev => {
         if (prev.some(t => t.id === newTable.id)) return prev;
@@ -1788,20 +1877,62 @@ export default function App() {
       {showWelcomeScreen && currentTableId !== null && (
         <WelcomeScreen
           mesaNumber={currentTableId}
+          tableName={tables.find(t => t.id === currentTableId)?.name}
+          tableSeats={tables.find(t => t.id === currentTableId)?.seats}
           restaurantProfile={restaurantProfile}
-          onComplete={(celular) => {
-            try {
-              sessionStorage.setItem(`welcome_done_${currentTableId}`, 'true');
-              sessionStorage.setItem(`churo_welcome_dismissed_${currentTableId}`, 'true');
-            } catch {
-              // ignore
-            }
+          onSessionInvalidated={() => {
+            setCart([]);
+            setClientPhone('');
+            setActiveClientSessionId(null);
+          }}
+          onComplete={(celular, sesionId) => {
+            if (sesionId) setActiveClientSessionId(sesionId);
+            setClientPhone(celular || '');
+            setSessionClosedMesa(null);
             setShowWelcomeScreen(false);
             if (celular) {
               showToast(`¡Bienvenido! WhatsApp +591 ${celular} registrado para Mesa #${currentTableId}`);
             }
           }}
         />
+      )}
+
+      {/* Pantalla limpia de agradecimiento si la mesa fue cobrada/liberada en tiempo real mientras estaba abierta */}
+      {sessionClosedMesa !== null && !isStaff && (
+        <div className="fixed inset-0 z-[2400] bg-[#0d0a08]/98 backdrop-blur-md flex items-center justify-center p-5 animate-fadeIn">
+          <div className="bg-[#292524] border border-[#ff7a00]/40 rounded-[28px] max-w-sm w-full p-7 text-center shadow-2xl space-y-5">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto">
+              <CheckCheck className="w-8 h-8" />
+            </div>
+            <div className="space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-[#ff7a00]">
+                Mesa #{sessionClosedMesa} Liberada
+              </span>
+              <h2 className="text-2xl font-serif font-black text-[#f5efe6]">
+                ¡Gracias por tu visita!
+              </h2>
+              <p className="text-xs text-[#a8a29e] leading-relaxed">
+                Tu cuenta fue cobrada y la mesa ha sido cerrada. Tu carrito y sesión se limpiaron automáticamente para el siguiente comensal.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const mesaToRestart = sessionClosedMesa;
+                clearClientSessionStorage(mesaToRestart);
+                setCart([]);
+                setClientPhone('');
+                setActiveClientSessionId(null);
+                setSessionClosedMesa(null);
+                setCurrentTableId(mesaToRestart);
+                setShowWelcomeScreen(true);
+              }}
+              className="w-full py-3.5 px-5 rounded-2xl bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-extrabold text-sm shadow-lg transition-all cursor-pointer active:scale-95"
+            >
+              Iniciar nueva orden en Mesa #{sessionClosedMesa}
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Toast Notification */}
@@ -1984,6 +2115,18 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Barra superior discreta del cliente con Mesa y Cambio Rápido de WhatsApp */}
+      {isClientMode && currentTableId !== null && !isStaff && (
+        <ClientTopBar
+          mesaNumber={currentTableId}
+          tableName={tables.find(t => t.id === currentTableId)?.name}
+          clientPhone={clientPhone}
+          onPhoneUpdated={(newPhone) => setClientPhone(newPhone)}
+          onRequestTableChange={() => setIsRequestChangeModalOpen(true)}
+          showToast={showToast}
+        />
+      )}
 
       {/* Main Content */}
       <main className={`max-w-[1280px] mx-auto px-4 sm:px-6 py-6 ${isDesktopPos ? 'pb-10' : 'pb-36 sm:pb-12'}`}>

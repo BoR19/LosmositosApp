@@ -9,6 +9,7 @@ import { db } from '../firebase';
 import { CartItem, Table, Order } from '../types/index.ts';
 import { formatTableOptionLabel } from '../data/menuData.ts';
 import { authenticateStaffWithPin } from '../services/staffSecurityService.ts';
+import { clearClientSessionStorage } from '../services/tableSessionService.ts';
 
 interface CartModalProps {
   isOpen: boolean;
@@ -24,7 +25,7 @@ interface CartModalProps {
   onUpdateQty: (id: string, delta: number) => void;
   onRemoveItem: (id: string) => void;
   onPlaceOrder: () => void;
-  onPayment: (method: 'QR' | 'EFECTIVO', discountBs?: number) => void;
+  onPayment: (method: 'QR' | 'EFECTIVO', discountBs?: number) => Promise<void> | void;
   cashAmount: string;
   setCashAmount: (val: string) => void;
   onViewMenu: () => void;
@@ -141,33 +142,35 @@ export const CartModal: React.FC<CartModalProps> = ({
   const allowRemoveSentItems = !isClient && isAdminAuthenticated;
   const allowMoveTable = !isClient && isAdminAuthenticated && Boolean(onOpenTableMove);
 
-  // Cargar número de celular del cliente (localStorage o Firestore mesas_activas)
+  // Cargar número de celular del cliente (en Staff POS lee estrictamente mesas_activas/{mesaId} de Firestore)
   useEffect(() => {
     const targetMesaId = isClient ? (Number(effectiveMesaQR) || currentTableId) : currentTableId;
     if ((isDocked || isOpen) && modalMode === 'bill' && targetMesaId !== null) {
-      const savedPhone = localStorage.getItem('churo_celular') || '';
-      if (savedPhone) {
-        setClienteCelular(savedPhone);
-        setTipoEntrega('ambas');
-      } else {
-        const fetchMesaCelular = async () => {
-          try {
-            const ref = doc(db, 'mesas_activas', `mesa_${targetMesaId}`);
-            const snap = await getDoc(ref);
-            if (snap.exists() && snap.data().cliente_celular) {
-              const phone = snap.data().cliente_celular;
-              setClienteCelular(phone);
-              setTipoEntrega('ambas');
-              return;
-            }
-          } catch (e) {
-            console.warn('Error al leer cliente_celular de mesas_activas:', e);
+      const fetchMesaCelular = async () => {
+        if (isClient) {
+          const savedPhone = localStorage.getItem('churo_celular') || '';
+          if (savedPhone) {
+            setClienteCelular(savedPhone);
+            setTipoEntrega('ambas');
+            return;
           }
-          setClienteCelular('');
-          setTipoEntrega('ticket');
-        };
-        fetchMesaCelular();
-      }
+        }
+        try {
+          const ref = doc(db, 'mesas_activas', `mesa_${targetMesaId}`);
+          const snap = await getDoc(ref);
+          if (snap.exists() && snap.data().cliente_celular) {
+            const phone = String(snap.data().cliente_celular);
+            setClienteCelular(phone);
+            setTipoEntrega('ambas');
+            return;
+          }
+        } catch (e) {
+          console.warn('Error al leer cliente_celular de mesas_activas:', e);
+        }
+        setClienteCelular('');
+        setTipoEntrega('ticket');
+      };
+      fetchMesaCelular();
     }
   }, [isOpen, isDocked, modalMode, currentTableId, isClient, effectiveMesaQR]);
 
@@ -256,7 +259,7 @@ export const CartModal: React.FC<CartModalProps> = ({
     }
   };
 
-  // Implementación de handleConfirmarYEntregar
+  // Cobrar, entregar recibo y liberar mesa reiniciando sesionActivaId y mesas_activas
   const handleConfirmarYEntregar = async () => {
     if (billMethod === 'EFECTIVO' && !isPaidOrOver) {
       return;
@@ -268,22 +271,8 @@ export const CartModal: React.FC<CartModalProps> = ({
     setIsConfirmingDelivery(true);
 
     try {
-      onPayment(billMethod, discountValue);
-
-      try {
-        const mesaActual = String(effectiveTableNumber || currentTable?.id || '');
-        localStorage.setItem('churo_sesion_activa', 'false');
-        localStorage.removeItem('churo_carrito');
-        if (mesaActual) {
-          localStorage.setItem('churo_ultima_mesa', mesaActual);
-        }
-        localStorage.setItem('churo_fecha_pago', new Date().toISOString());
-        localStorage.removeItem('churo_fecha_inicio');
-      } catch (stErr) {
-        console.warn("Error updating session storage on checkout:", stErr);
-      }
-
-      const mesaName = currentTable ? currentTable.name : `Mesa #${effectiveTableNumber}`;
+      const mesaNum = Number(effectiveTableNumber || currentTable?.id || 0);
+      const mesaName = currentTable ? currentTable.name : `Mesa #${mesaNum}`;
       const fechaStr = new Date().toLocaleString('es-BO', {
         dateStyle: 'short',
         timeStyle: 'short'
@@ -319,7 +308,7 @@ Gastronomía de Altura • Tarija`;
         console.log('Imprimir ticket 80mm:', textoRecibo);
         try {
           await addDoc(collection(db, 'print_queue'), {
-            mesa: effectiveTableNumber,
+            mesa: mesaNum,
             tableName: mesaName,
             textoRecibo,
             total: totalToShow,
@@ -334,7 +323,7 @@ Gastronomía de Altura • Tarija`;
 
       try {
         await addDoc(collection(db, 'tickets_history'), {
-          mesa: effectiveTableNumber,
+          mesa: mesaNum,
           tableName: mesaName,
           total: totalToShow,
           descuento: discountValue,
@@ -346,6 +335,13 @@ Gastronomía de Altura • Tarija`;
         });
       } catch (tErr) {
         console.warn('Error al guardar en tickets_history:', tErr);
+      }
+
+      // Ejecutar cobro completo y liberación de mesa (pedidos pagados, mesa libre, sesionActivaId = null y delete mesas_activas)
+      await onPayment(billMethod, discountValue);
+
+      if (!isStaffAuthenticated && mesaNum) {
+        clearClientSessionStorage(mesaNum);
       }
     } catch (err) {
       console.error('Error al confirmar y entregar recibo:', err);

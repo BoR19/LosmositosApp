@@ -20,6 +20,8 @@ export interface Table {
   name: string;
   seats: number;
   status: 'free' | 'occupied' | 'reserved' | 'por-pagar';
+  estado?: 'libre' | 'ocupada';
+  sesionActivaId?: string | null;
   currentOrder?: {
     id: string;
     items: (CartItem | OrderItem)[];
