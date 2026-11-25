@@ -2,13 +2,12 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   X, ShoppingBag, Plus, Minus, Trash2, Send, CheckCircle2, Utensils,
   FileText, Sparkles, DollarSign, QrCode, ShieldCheck,
-  Lock, KeyRound, Bell, Check, ArrowRightLeft, ChefHat, Flame, Percent
+  Bell, Check, ArrowRightLeft, ChefHat, Flame, Percent, Pencil
 } from 'lucide-react';
 import { doc, getDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { CartItem, Table, Order } from '../types/index.ts';
 import { formatTableOptionLabel } from '../data/menuData.ts';
-import { authenticateStaffWithPin } from '../services/staffSecurityService.ts';
 import { clearClientSessionStorage } from '../services/tableSessionService.ts';
 
 interface CartModalProps {
@@ -109,12 +108,6 @@ export const CartModal: React.FC<CartModalProps> = ({
   // Feedback visual temporal al llamar al mozo
   const [waiterRequested, setWaiterRequested] = useState<boolean>(false);
 
-  // Inline staff PIN login if waiter/cashier is on table/customer device
-  const [showInlinePin, setShowInlinePin] = useState<boolean>(false);
-  const [inlinePin, setInlinePin] = useState<string>('');
-  const [pinError, setPinError] = useState<string | null>(null);
-  const [isVerifyingInlinePin, setIsVerifyingInlinePin] = useState<boolean>(false);
-
   // Requerimientos de Recibo y Cliente
   const [tipoEntrega, setTipoEntrega] = useState<'whatsapp' | 'ticket' | 'ambas'>('ambas');
   const [clienteCelular, setClienteCelular] = useState<string>('');
@@ -135,12 +128,12 @@ export const CartModal: React.FC<CartModalProps> = ({
   const effectiveMesaQR = mesaQR || (typeof localStorage !== 'undefined' ? localStorage.getItem('churo_mesa') : null) || currentTableId;
   const effectiveTableNumber = isClient ? (Number(effectiveMesaQR) || currentTableId) : currentTableId;
 
-  // Permisos efectivos en UI
-  const allowTakeOrders = isClient || isAdminAuthenticated || canTakeOrders;
-  const allowKitchenControls = !isClient && (isAdminAuthenticated || canManageKitchen);
-  const allowChargeControls = isStaffAuthenticated && (isAdminAuthenticated || canCharge);
-  const allowRemoveSentItems = !isClient && isAdminAuthenticated;
-  const allowMoveTable = !isClient && isAdminAuthenticated && Boolean(onOpenTableMove);
+  // Permisos efectivos en UI (bloqueo estricto para clientes sin sesión de personal)
+  const allowTakeOrders = isClient || (isStaffAuthenticated && (isAdminAuthenticated || canTakeOrders));
+  const allowKitchenControls = Boolean(isStaffAuthenticated && !isClient && (isAdminAuthenticated || canManageKitchen));
+  const allowChargeControls = Boolean(isStaffAuthenticated && (isAdminAuthenticated || canCharge));
+  const allowRemoveSentItems = Boolean(isStaffAuthenticated && !isClient && isAdminAuthenticated);
+  const allowMoveTable = Boolean(isStaffAuthenticated && !isClient && isAdminAuthenticated && onOpenTableMove);
 
   // Cargar número de celular del cliente (en Staff POS lee estrictamente mesas_activas/{mesaId} de Firestore)
   useEffect(() => {
@@ -178,9 +171,6 @@ export const CartModal: React.FC<CartModalProps> = ({
   useEffect(() => {
     setQrVerified(false);
     setWaiterRequested(false);
-    setShowInlinePin(false);
-    setInlinePin('');
-    setPinError(null);
     setDiscountInput('');
 
     if (isDocked || !isOpen) return;
@@ -223,6 +213,10 @@ export const CartModal: React.FC<CartModalProps> = ({
   const itemsToShow = modalMode === 'bill' ? (effectiveOrder?.items || []) : cart;
   const totalItemsCount = cart.reduce((sum, item) => sum + item.qty, 0);
 
+  const cleanReceiptPhone = clienteCelular.replace(/\D/g, '').slice(0, 8);
+  const isValidReceiptPhone = /^[67]\d{7}$/.test(cleanReceiptPhone);
+  const hasPartialReceiptPhone = cleanReceiptPhone.length > 0 && !isValidReceiptPhone;
+
   if (!isDocked && !isOpen) return null;
 
   // =========================================================================
@@ -238,29 +232,11 @@ export const CartModal: React.FC<CartModalProps> = ({
   const montoFaltante = isUnderpaid ? (totalToShow - cashNum).toFixed(2) : '0.00';
   const montoVuelto = isPaidOrOver ? (cashNum - totalToShow).toFixed(2) : '0.00';
 
-  // Quick PIN submit inside modal (validated against Firestore)
-  const handleInlinePinSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPinError(null);
-    setIsVerifyingInlinePin(true);
-    try {
-      const result = await authenticateStaffWithPin(inlinePin);
-      if (result.ok) {
-        localStorage.setItem('elchuro_staff_session', JSON.stringify(result.session));
-        if (onStaffLoginSuccess) onStaffLoginSuccess(result.session);
-        setShowInlinePin(false);
-        setInlinePin('');
-        setPinError(null);
-      } else {
-        setPinError(result.error);
-      }
-    } finally {
-      setIsVerifyingInlinePin(false);
-    }
-  };
-
-  // Cobrar, entregar recibo y liberar mesa reiniciando sesionActivaId y mesas_activas
+  // Cobrar, entregar recibo y liberar mesa reiniciando sesionActivaId y mesas_activas (estricto solo personal con caja)
   const handleConfirmarYEntregar = async () => {
+    if (!allowChargeControls) {
+      return;
+    }
     if (billMethod === 'EFECTIVO' && !isPaidOrOver) {
       return;
     }
@@ -279,28 +255,29 @@ export const CartModal: React.FC<CartModalProps> = ({
       });
 
       const itemsListText = itemsToShow
-        .map((i: any) => `• ${i.qty}x ${i.nombre} - Bs. ${(i.precioBs * i.qty).toFixed(2)}`)
+        .map((i: any) => `- ${i.qty}x ${i.nombre} - Bs. ${(i.precioBs * i.qty).toFixed(2)}`)
         .join('\n');
 
-      const textoRecibo =
-`🔥 *EL CHURO MOSITO* 🔥
-*Recibo Digital de Consumo*
+      const rawRecibo =
+`*EL CHURO MOSITO*
+🧾 Recibo Digital de Consumo
 ----------------------------------
-📍 *Mesa:* ${mesaName}
-📅 *Fecha:* ${fechaStr}
-💳 *Método de Pago:* ${billMethod}
+*Mesa:* ${mesaName}
+*Fecha:* ${fechaStr}
+*Método de Pago:* ${billMethod}
 ----------------------------------
 *Detalle de Consumo:*
 ${itemsListText}
 ----------------------------------
-${discountValue > 0 ? `🏷️ *Descuento:* -Bs. ${discountValue.toFixed(2)}\n` : ''}💰 *Total:* Bs. ${totalToShow.toFixed(2)}
-${billMethod === 'EFECTIVO' && hasEnteredCash ? `💵 *Efectivo Entregado:* Bs. ${cashNum.toFixed(2)}\n🪙 *Cambio:* Bs. ${montoVuelto}\n` : ''}----------------------------------
+${discountValue > 0 ? `*Descuento:* -Bs. ${discountValue.toFixed(2)}\n` : ''}*Total:* Bs. ${totalToShow.toFixed(2)}
+${billMethod === 'EFECTIVO' && hasEnteredCash ? `*Efectivo Entregado:* Bs. ${cashNum.toFixed(2)}\n*Cambio:* Bs. ${montoVuelto}\n` : ''}----------------------------------
 ¡Muchas gracias por tu visita!
 Gastronomía de Altura • Tarija`;
 
-      if ((tipoEntrega === 'whatsapp' || tipoEntrega === 'ambas') && clienteCelular) {
-        const cleanPhone = clienteCelular.replace(/\D/g, '');
-        const waUrl = `https://wa.me/591${cleanPhone}?text=${encodeURIComponent(textoRecibo)}`;
+      const textoRecibo = rawRecibo.replace(/\uFFFD/g, '');
+
+      if ((tipoEntrega === 'whatsapp' || tipoEntrega === 'ambas') && isValidReceiptPhone) {
+        const waUrl = `https://wa.me/591${cleanReceiptPhone}?text=${encodeURIComponent(textoRecibo)}`;
         window.open(waUrl, '_blank');
       }
 
@@ -327,7 +304,7 @@ Gastronomía de Altura • Tarija`;
           tableName: mesaName,
           total: totalToShow,
           descuento: discountValue,
-          celular: clienteCelular || null,
+          celular: isValidReceiptPhone ? cleanReceiptPhone : null,
           tipoEntrega,
           metodoPago: billMethod,
           fecha: serverTimestamp(),
@@ -609,7 +586,7 @@ Gastronomía de Altura • Tarija`;
               )}
 
               {/* Acciones rápidas en Comanda Activa según rol */}
-              {!isClient && (
+              {!isClient && isStaffAuthenticated ? (
                 <div className="flex flex-wrap gap-2 pt-1">
                   {allowTakeOrders && (
                     <button
@@ -658,6 +635,35 @@ Gastronomía de Altura • Tarija`;
                       <span>Solicitar Cuenta</span>
                     </button>
                   )}
+                </div>
+              ) : onCallWaiterForBill && (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWaiterRequested(true);
+                      onCallWaiterForBill();
+                      setTimeout(() => setWaiterRequested(false), 5000);
+                    }}
+                    disabled={waiterRequested}
+                    className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer border ${
+                      waiterRequested
+                        ? 'bg-emerald-600 border-emerald-500 text-white cursor-default'
+                        : 'bg-[#1c1917] hover:bg-[#3a3632] border-emerald-500/40 text-emerald-400'
+                    }`}
+                  >
+                    {waiterRequested ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>¡Cuenta solicitada! Un mozo se acerca</span>
+                      </>
+                    ) : (
+                      <>
+                        <Bell className="w-3.5 h-3.5" />
+                        <span>Solicitar Cuenta</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               )}
             </div>
@@ -1017,19 +1023,53 @@ Gastronomía de Altura • Tarija`;
                         </div>
                       )}
 
-                      {/* ¿CÓMO ENTREGAR RECIBO? */}
-                      <div className="bg-[#1E1E1E] border border-zinc-800 rounded-xl p-4 mt-4 text-left shadow-lg">
-                        <p className="text-white font-bold text-xs sm:text-sm">¿Cómo entregar recibo?</p>
-                        <p className="text-zinc-400 text-xs mt-0.5 font-mono">
-                          +591 {clienteCelular || 'Sin número'}
-                        </p>
-                        <div className="flex gap-2 mt-3">
+                      {/* ¿CÓMO ENTREGAR RECIBO? (Con edición rápida de WhatsApp en Caja) */}
+                      <div className="bg-[#1E1E1E] border border-zinc-800 rounded-xl p-4 mt-4 text-left shadow-lg space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-white font-bold text-xs sm:text-sm">¿Cómo entregar recibo?</p>
+                          {isValidReceiptPhone && (
+                            <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" /> Válido
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <div className="flex items-center rounded-xl bg-[#141414] border border-zinc-700 focus-within:border-[#FF7A00] px-2.5 py-1.5 transition-colors">
+                            <span className="text-xs font-mono font-bold text-zinc-300 pr-2 border-r border-zinc-700 shrink-0">
+                              +591
+                            </span>
+                            <input
+                              type="tel"
+                              inputMode="numeric"
+                              maxLength={8}
+                              value={cleanReceiptPhone}
+                              onChange={(e) => {
+                                const nextVal = e.target.value.replace(/\D/g, '').slice(0, 8);
+                                setClienteCelular(nextVal);
+                                if (!/^[67]\d{7}$/.test(nextVal) && tipoEntrega !== 'ticket') {
+                                  setTipoEntrega('ticket');
+                                }
+                              }}
+                              placeholder="Editar celular (ej: 72451234)"
+                              className="w-full bg-transparent px-2.5 py-1 text-xs font-mono font-bold text-white placeholder-zinc-600 focus:outline-none tracking-wider"
+                            />
+                            <Pencil className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                          </div>
+                          {hasPartialReceiptPhone && (
+                            <p className="text-[10px] text-amber-400 font-medium">
+                              Ingresa un número de celular válido de Bolivia (8 dígitos empezando con 6 o 7).
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex gap-2">
                           <button
                             type="button"
                             onClick={() => setTipoEntrega('whatsapp')}
-                            disabled={!clienteCelular}
+                            disabled={!isValidReceiptPhone}
                             className={`flex-1 py-3 rounded-xl font-bold text-xs transition-all cursor-pointer ${
-                              !clienteCelular
+                              !isValidReceiptPhone
                                 ? 'bg-zinc-800/50 text-zinc-600 opacity-50 cursor-not-allowed border border-zinc-800'
                                 : tipoEntrega === 'whatsapp'
                                   ? 'bg-[#25D366] text-white shadow-lg font-black'
@@ -1052,9 +1092,9 @@ Gastronomía de Altura • Tarija`;
                           <button
                             type="button"
                             onClick={() => setTipoEntrega('ambas')}
-                            disabled={!clienteCelular}
+                            disabled={!isValidReceiptPhone}
                             className={`flex-1 py-3 rounded-xl font-bold text-xs transition-all cursor-pointer ${
-                              !clienteCelular
+                              !isValidReceiptPhone
                                 ? 'bg-zinc-800/50 text-zinc-600 opacity-50 cursor-not-allowed border border-zinc-800'
                                 : tipoEntrega === 'ambas'
                                   ? 'bg-[#FF7A00] text-black font-black shadow-[0_0_15px_rgba(255,122,0,0.5)]'
@@ -1073,10 +1113,12 @@ Gastronomía de Altura • Tarija`;
                         disabled={
                           isConfirmingDelivery ||
                           (billMethod === 'EFECTIVO' && !isPaidOrOver) ||
-                          (billMethod === 'QR' && !qrVerified)
+                          (billMethod === 'QR' && !qrVerified) ||
+                          ((tipoEntrega === 'whatsapp' || tipoEntrega === 'ambas') && !isValidReceiptPhone)
                         }
                         className={`w-full mt-4 py-4 px-4 rounded-xl font-black text-sm text-black transition-all flex items-center justify-center gap-2 border border-amber-300/30 active:scale-98 ${
-                          (billMethod === 'EFECTIVO' && isPaidOrOver) || (billMethod === 'QR' && qrVerified)
+                          ((billMethod === 'EFECTIVO' && isPaidOrOver) || (billMethod === 'QR' && qrVerified)) &&
+                          (tipoEntrega === 'ticket' || isValidReceiptPhone)
                             ? 'bg-[#FF7A00] hover:bg-[#ff8c1a] shadow-[0_0_20px_rgba(255,122,0,0.6)] cursor-pointer'
                             : 'bg-zinc-800 text-zinc-500 opacity-60 cursor-not-allowed shadow-none border-zinc-800'
                         }`}
@@ -1088,46 +1130,27 @@ Gastronomía de Altura • Tarija`;
                     </div>
                   ) : (
                     /* =========================================================================
-                     * VISTA DE COMENSAL O PERSONAL SIN PERMISO DE CAJA
+                     * VISTA ESTRICTAMENTE RESTRINGIDA: COMENSAL O PERSONAL SIN PERMISO DE CAJA
+                     * (Oculta cualquier pasarela de pago, QR de pago, descuentos, vuelto o cobro)
                      * ========================================================================= */
                     <div className="space-y-4">
-                      {/* Banner Informativo para Comensal */}
-                      <div className="bg-[#292524] p-4 rounded-2xl border border-[#3a3632] space-y-3 text-center">
-                        <div className="bg-white p-3 rounded-xl w-36 h-36 mx-auto flex items-center justify-center shadow-lg">
-                          <img
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(`PAGO_MESA_${currentTableId}_TOTAL_${totalToShow.toFixed(2)}`)}`}
-                            alt="QR Simple Pago"
-                            className="w-full h-full object-contain"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <span className="text-xs font-bold text-[#f5efe6] block">
-                            Escanea con tu aplicación de banca móvil
+                      <div className="p-4 rounded-2xl bg-[#292524] border border-[#3a3632] space-y-2">
+                        <div className="flex items-center gap-2 font-bold text-xs text-[#ff7a00]">
+                          <FileText className="w-4 h-4 shrink-0" />
+                          <span>
+                            {isStaffAuthenticated
+                              ? 'Cobro Exclusivo de Caja / Administración'
+                              : 'Resumen de Consumo en Mesa'}
                           </span>
-                          <span className="text-sm font-extrabold text-emerald-400 block">
-                            Monto a Pagar: Bs. {totalToShow.toFixed(2)}
-                          </span>
-                          <p className="text-[11px] text-[#a8a29e] max-w-xs mx-auto">
-                            Acepta Banco Sol, BNB, BCP, Banco Unión, Banco FIE, Banco Mercantil Santa Cruz y Simple QR.
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* Nota de Cobro Exclusivo por Personal de Caja */}
-                      <div className="p-3.5 rounded-xl bg-amber-950/30 border border-amber-600/30 text-amber-200/90 text-xs space-y-1.5">
-                        <div className="flex items-center gap-1.5 font-bold text-amber-300">
-                          <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
-                          <span>{isStaffAuthenticated ? 'Requiere Permiso de Caja' : 'Instrucciones para Comensales'}</span>
                         </div>
                         <p className="text-[11px] text-[#d6d3d1] leading-relaxed">
                           {isStaffAuthenticated
-                            ? 'Tu cuenta no tiene habilitado el permiso de Caja y Cobros. Un Cajero o Administrador debe confirmar el pago para liberar la mesa.'
-                            : <>Puedes transferir con el código QR superior o pagar en efectivo con tu mozo.<strong> El personal del restaurante verificará el pago y liberará la mesa en el sistema.</strong></>
-                          }
+                            ? 'Tu cuenta no tiene habilitado el permiso de Caja y Cobros. Un Cajero o Administrador debe procesar el pago y liberar la mesa.'
+                            : 'El pago de tu consumo acumulado se realiza directamente en tu mesa o en Caja con nuestro personal.'}
                         </p>
                       </div>
 
-                      {/* Botón para solicitar atención del mozo/cajero para pagar */}
+                      {/* Botón para solicitar la cuenta al mozo/caja */}
                       {onCallWaiterForBill && (
                         <button
                           type="button"
@@ -1137,77 +1160,41 @@ Gastronomía de Altura • Tarija`;
                             setTimeout(() => setWaiterRequested(false), 5000);
                           }}
                           disabled={waiterRequested}
-                          className={`w-full py-3.5 px-4 rounded-[14px] font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer ${
+                          className={`w-full py-3.5 px-4 rounded-[14px] font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer ${
                             waiterRequested
                               ? 'bg-emerald-600 text-white cursor-default'
-                              : 'bg-amber-600 hover:bg-amber-700 active:scale-95 text-white'
+                              : 'bg-[#ff7a00] hover:bg-[#ff8c1a] active:scale-95 text-white'
                           }`}
                         >
                           {waiterRequested ? (
                             <>
-                              <Check className="w-4 h-4 text-emerald-200" />
-                              <span>¡Personal Notificado! En breve se acercará a la mesa</span>
+                              <Check className="w-4 h-4 text-emerald-100" />
+                              <span>¡Cuenta solicitada! Un mozo se acercará a tu mesa</span>
                             </>
                           ) : (
                             <>
-                              <Bell className="w-4 h-4 animate-bounce" />
-                              <span>{isStaffAuthenticated ? 'Solicitar Cobro en Caja' : 'Llamar al Mozo para Pagar / Traer Cuenta'}</span>
+                              <Bell className="w-4 h-4" />
+                              <span>{isStaffAuthenticated ? 'Solicitar Cobro en Caja' : 'Solicitar Cuenta'}</span>
                             </>
                           )}
                         </button>
                       )}
 
-                      {/* Acceso Rápido con PIN para Cajero/Admin en la mesa */}
                       {!isStaffAuthenticated && (
-                        <div className="pt-2 text-center">
-                          {!showInlinePin ? (
-                            <button
-                              type="button"
-                              onClick={() => setShowInlinePin(true)}
-                              className="text-[11px] text-[#78716c] hover:text-[#a8a29e] flex items-center justify-center gap-1 mx-auto transition-colors cursor-pointer"
-                            >
-                              <Lock className="w-3 h-3" />
-                              <span>¿Eres mozo o personal del restaurante? Ingresar con PIN</span>
-                            </button>
-                          ) : (
-                            <form onSubmit={handleInlinePinSubmit} className="bg-[#1c1917] p-3 rounded-xl border border-[#3a3632] space-y-2 text-left animate-fadeIn">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[11px] font-bold text-[#f5efe6] flex items-center gap-1">
-                                  <KeyRound className="w-3.5 h-3.5 text-[#ff7a00]" /> PIN de Personal (Caja / Mozo)
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => setShowInlinePin(false)}
-                                  className="text-[11px] text-[#78716c] hover:text-white"
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                              <div className="flex gap-2">
-                                <input
-                                  type="password"
-                                  inputMode="numeric"
-                                  maxLength={4}
-                                  placeholder="PIN de 4 dígitos"
-                                  value={inlinePin}
-                                  onChange={(e) => setInlinePin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                                  className="flex-1 bg-[#292524] border border-[#3a3632] rounded-lg px-3 py-1.5 text-xs text-white font-mono tracking-widest focus:outline-none focus:border-[#ff7a00]"
-                                  autoFocus
-                                />
-                                <button
-                                  type="submit"
-                                  disabled={isVerifyingInlinePin}
-                                  className="px-3.5 py-1.5 bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-bold text-xs rounded-lg cursor-pointer disabled:opacity-50"
-                                >
-                                  {isVerifyingInlinePin ? '...' : 'Acceder'}
-                                </button>
-                              </div>
-                              {pinError && (
-                                <p className="text-[10px] text-red-400 font-medium">{pinError}</p>
-                              )}
-                            </form>
-                          )}
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onSwitchMode) {
+                              onSwitchMode('cart');
+                            }
+                            onClose();
+                            onViewMenu();
+                          }}
+                          className="w-full py-2.5 px-4 rounded-[14px] bg-[#292524] hover:bg-[#3a3632] border border-[#3a3632] text-[#f5efe6] font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4 text-[#ff7a00]" />
+                          <span>Seguir Pidiendo / Agregar Adición</span>
+                        </button>
                       )}
                     </div>
                   )}

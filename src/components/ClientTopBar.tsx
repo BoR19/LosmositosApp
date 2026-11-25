@@ -25,8 +25,7 @@ export const ClientTopBar: React.FC<ClientTopBarProps> = ({
   const [isSaving, setIsSaving] = useState(false);
 
   const cleanDraft = draftPhone.replace(/\D/g, '').slice(0, 8);
-  const isValidPhone =
-    cleanDraft.length === 8 && (cleanDraft.startsWith('6') || cleanDraft.startsWith('7'));
+  const isValidPhone = /^[67]\d{7}$/.test(cleanDraft);
 
   const handleOpenEditor = () => {
     setDraftPhone(clientPhone || '');
@@ -38,9 +37,7 @@ export const ClientTopBar: React.FC<ClientTopBarProps> = ({
     e.preventDefault();
     if (!isValidPhone) {
       setErrorMsg(
-        cleanDraft.length < 8
-          ? 'Ingresa los 8 dígitos del celular.'
-          : 'El número debe comenzar con 6 o 7.'
+        'Ingresa un número de celular válido de Bolivia (8 dígitos empezando con 6 o 7)'
       );
       return;
     }

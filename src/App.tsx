@@ -27,11 +27,13 @@ import { RequestTableChangeModal, MoveTableStaffModal, ClientConfirmMoveModal } 
 import { EquipoYPermisos } from './components/EquipoYPermisos.tsx';
 import { PosSidebar } from './components/PosSidebar.tsx';
 import { ClientTopBar } from './components/ClientTopBar.tsx';
+import { QuickOpenTableModal } from './components/QuickOpenTableModal.tsx';
 import {
   clearClientSessionStorage,
   isTableDataFree,
   liberarMesaYReiniciarSesion,
   generateTableSessionId,
+  abrirMesaDesdeCaja,
 } from './services/tableSessionService.ts';
 import {
   subscribeSecurityConfig,
@@ -196,6 +198,7 @@ export default function App() {
   const [waiterCalls, setWaiterCalls] = useState<WaiterCall[]>([]);
   const [isAddTableModalOpen, setIsAddTableModalOpen] = useState<boolean>(false);
   const [tableToDelete, setTableToDelete] = useState<Table | null>(null);
+  const [quickOpenTable, setQuickOpenTable] = useState<Table | null>(null);
 
   // Estados para Solicitudes de Cambio de Mesa
   const [changeRequests, setChangeRequests] = useState<SolicitudCambio[]>([]);
@@ -335,12 +338,19 @@ export default function App() {
       });
       setOrders(liveOrders);
 
-      // Auto-update table occupied status based on active orders (until order is paid or cancelled)
+      // Auto-update table occupied status based on active orders or active Caja/QR session
       setTables(prev => prev.map(t => {
         const tableActiveOrder = liveOrders.find(o => o.tableId === t.id && o.status !== 'pagado' && o.status !== 'cancelado');
         if (tableActiveOrder) {
           const status = tableActiveOrder.status === 'por-pagar' ? 'por-pagar' : 'occupied';
           return { ...t, status, currentOrder: tableActiveOrder };
+        }
+        if (t.estado === 'ocupada' && t.sesionActivaId) {
+          return {
+            ...t,
+            status: t.status === 'por-pagar' ? 'por-pagar' : 'occupied',
+            currentOrder: null,
+          };
         }
         return { ...t, status: 'free', currentOrder: null };
       }));
@@ -422,12 +432,16 @@ export default function App() {
       } else {
         const liveTables: Table[] = snapshot.docs.map(d => {
           const data = d.data();
+          const hasActiveSession = data.estado === 'ocupada' && Boolean(data.sesionActivaId);
+          const derivedStatus: Table['status'] =
+            data.status === 'por-pagar' ? 'por-pagar' : hasActiveSession ? 'occupied' : 'free';
           return {
             id: Number(data.id || d.id),
             name: data.name || `Mesa ${d.id}`,
             seats: Number(data.seats || 4),
-            status: 'free' as const,
+            status: derivedStatus,
             estado: (data.estado === 'ocupada' ? 'ocupada' : 'libre') as 'libre' | 'ocupada',
+            origen: data.origen === 'caja' || data.origen === 'qr' ? data.origen : null,
             sesionActivaId: data.sesionActivaId ?? null,
             currentOrder: null
           };
@@ -436,7 +450,7 @@ export default function App() {
         setTables(prev => {
           return liveTables.map(lt => {
             const existing = prev.find(p => p.id === lt.id);
-            if (existing && existing.status !== 'free') {
+            if (existing && existing.currentOrder) {
               return { ...lt, status: existing.status, currentOrder: existing.currentOrder };
             }
             return lt;
@@ -637,6 +651,7 @@ export default function App() {
     setQrModalTable(null);
     setIsAddTableModalOpen(false);
     setTableToDelete(null);
+    setQuickOpenTable(null);
     setIsRequestChangeModalOpen(false);
     setMoveStaffModal({ isOpen: false, sourceTable: null });
     setDishModalOpen(false);
@@ -685,73 +700,152 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [isClientMode, currentTableId]);
 
-  // Validación y limpieza en tiempo real de la sesión de mesa del cliente (onSnapshot en mesas/{mesaId})
+  // Validación y limpieza en tiempo real de la sesión de mesa del cliente (mesas/{mesaId} + mesas_activas/mesa_{mesaId})
   useEffect(() => {
     if (isStaff) return;
     const targetMesaId = mesaQR ?? currentTableId;
     if (targetMesaId === null) return;
 
-    const mesaDocRef = doc(db, 'mesas', String(targetMesaId));
-    const unsubscribeMesaSession = onSnapshot(
-      mesaDocRef,
-      (snap) => {
-        if (clientMovePrompt?.isOpen) return;
-        const data = snap.exists() ? snap.data() : null;
-        const liveSessionId = typeof data?.sesionActivaId === 'string' ? data.sesionActivaId : null;
-        const tableIsFree = isTableDataFree(data);
+    let latestMesaData: Record<string, any> | null = null;
+    let latestActivaData: Record<string, any> | null = null;
+    let mesaSnapshotReady = false;
 
-        const localSessionId = localStorage.getItem('churo_sesion_id');
-        const localMesa = localStorage.getItem('churo_mesa');
-        const hadActiveLocalSession = Boolean(
-          localSessionId && localMesa === String(targetMesaId)
-        );
+    const evaluateClientSession = () => {
+      if (clientMovePrompt?.isOpen || !mesaSnapshotReady) return;
 
-        // 1. Si el cliente tenía la pestaña abierta con sesión activa y el cajero liberó la mesa:
-        if (
-          hadActiveLocalSession &&
-          !showWelcomeScreen &&
-          sessionClosedMesa === null &&
-          (tableIsFree || (liveSessionId && liveSessionId !== localSessionId))
-        ) {
-          clearClientSessionStorage(targetMesaId);
-          setCart([]);
-          setClientPhone('');
-          setActiveClientSessionId(null);
-          setCustomerModalOpen(false);
-          setIsRequestChangeModalOpen(false);
-          setSessionClosedMesa(targetMesaId);
-          return;
-        }
+      const data = latestMesaData;
+      const activa = latestActivaData;
+      const liveSessionId =
+        typeof activa?.sesionActivaId === 'string' && activa.sesionActivaId
+          ? activa.sesionActivaId
+          : typeof data?.sesionActivaId === 'string' && data.sesionActivaId
+            ? data.sesionActivaId
+            : null;
 
-        // 2. Si el cliente escanea el QR de una mesa libre o con sesionActivaId distinta a su localStorage:
-        if (
-          !showWelcomeScreen &&
-          sessionClosedMesa === null &&
-          (tableIsFree || !localSessionId || liveSessionId !== localSessionId || localMesa !== String(targetMesaId))
-        ) {
-          clearClientSessionStorage(targetMesaId);
-          setCart([]);
-          setClientPhone('');
-          setActiveClientSessionId(null);
-          setShowWelcomeScreen(true);
-          return;
-        }
+      const isOpenedFromCaja = Boolean(
+        liveSessionId &&
+          ((activa?.estado === 'ocupada' && activa?.origen === 'caja') ||
+            (data?.estado === 'ocupada' && data?.origen === 'caja'))
+      );
+      const tableIsFree = !isOpenedFromCaja && isTableDataFree(data);
 
-        // 3. Sesión válida coincidente
-        if (liveSessionId && localSessionId === liveSessionId && localMesa === String(targetMesaId)) {
-          setActiveClientSessionId(liveSessionId);
-          const storedPhone = localStorage.getItem('churo_celular') || '';
-          if (storedPhone !== clientPhone) {
-            setClientPhone(storedPhone);
+      const localSessionId = localStorage.getItem('churo_sesion_id');
+      const localMesa = localStorage.getItem('churo_mesa');
+      const hadActiveLocalSession = Boolean(
+        localSessionId && localMesa === String(targetMesaId)
+      );
+
+      // 0. Salto automático de bienvenida si la mesa ya fue abierta en Caja (estado: 'ocupada', origen: 'caja')
+      if (isOpenedFromCaja && liveSessionId && sessionClosedMesa === null) {
+        const needsSync =
+          showWelcomeScreen ||
+          localSessionId !== liveSessionId ||
+          localMesa !== String(targetMesaId);
+
+        if (needsSync) {
+          if (localMesa && localMesa !== String(targetMesaId)) {
+            setCart([]);
           }
+          const cajaPhone = String(activa?.cliente_celular || '')
+            .replace(/\D/g, '')
+            .slice(0, 8);
+          const nowIso = new Date().toISOString();
+          try {
+            localStorage.setItem('churo_mesa', String(targetMesaId));
+            localStorage.setItem('churo_sesion_id', liveSessionId);
+            localStorage.setItem('churo_sesion_activa', 'true');
+            localStorage.setItem('churo_fecha', nowIso);
+            localStorage.setItem('churo_fecha_inicio', nowIso);
+            if (cajaPhone) {
+              localStorage.setItem('churo_celular', cajaPhone);
+            } else {
+              localStorage.removeItem('churo_celular');
+            }
+            sessionStorage.setItem(`welcome_done_${targetMesaId}`, 'true');
+            sessionStorage.setItem(`churo_welcome_dismissed_${targetMesaId}`, 'true');
+          } catch {
+            // ignore storage error
+          }
+          setCurrentTableId(targetMesaId);
+          setActiveClientSessionId(liveSessionId);
+          setClientPhone(cajaPhone);
+          setShowWelcomeScreen(false);
+          setActiveTab('menu');
         }
+        return;
+      }
+
+      // 1. Si el cliente tenía la pestaña abierta con sesión activa y el cajero liberó la mesa:
+      if (
+        hadActiveLocalSession &&
+        !showWelcomeScreen &&
+        sessionClosedMesa === null &&
+        (tableIsFree || (liveSessionId && liveSessionId !== localSessionId))
+      ) {
+        clearClientSessionStorage(targetMesaId);
+        setCart([]);
+        setClientPhone('');
+        setActiveClientSessionId(null);
+        setCustomerModalOpen(false);
+        setIsRequestChangeModalOpen(false);
+        setSessionClosedMesa(targetMesaId);
+        return;
+      }
+
+      // 2. Si el cliente escanea el QR de una mesa libre o con sesionActivaId distinta a su localStorage:
+      if (
+        !showWelcomeScreen &&
+        sessionClosedMesa === null &&
+        (tableIsFree || !localSessionId || liveSessionId !== localSessionId || localMesa !== String(targetMesaId))
+      ) {
+        clearClientSessionStorage(targetMesaId);
+        setCart([]);
+        setClientPhone('');
+        setActiveClientSessionId(null);
+        setShowWelcomeScreen(true);
+        return;
+      }
+
+      // 3. Sesión válida coincidente
+      if (liveSessionId && localSessionId === liveSessionId && localMesa === String(targetMesaId)) {
+        setActiveClientSessionId(liveSessionId);
+        const storedPhone = localStorage.getItem('churo_celular') || '';
+        if (storedPhone !== clientPhone) {
+          setClientPhone(storedPhone);
+        }
+      }
+    };
+
+    const unsubscribeMesaSession = onSnapshot(
+      doc(db, 'mesas', String(targetMesaId)),
+      (snap) => {
+        latestMesaData = snap.exists() ? snap.data() : null;
+        mesaSnapshotReady = true;
+        evaluateClientSession();
       },
       (err) => {
         console.log('Usando localStorage fallback (mesa session listener):', err);
       }
     );
 
-    return () => unsubscribeMesaSession();
+    const unsubscribeMesaActiva = onSnapshot(
+      doc(db, 'mesas_activas', `mesa_${targetMesaId}`),
+      (snap) => {
+        latestActivaData = snap.exists() ? snap.data() : null;
+        if (latestActivaData?.estado === 'ocupada' && latestActivaData?.origen === 'caja') {
+          mesaSnapshotReady = true;
+        }
+        evaluateClientSession();
+      },
+      (err) => {
+        console.log('Usando localStorage fallback (mesas_activas listener):', err);
+      }
+    );
+
+    return () => {
+      unsubscribeMesaSession();
+      unsubscribeMesaActiva();
+    };
   }, [isStaff, mesaQR, currentTableId, showWelcomeScreen, sessionClosedMesa, clientMovePrompt?.isOpen]);
 
   // Detect Mesa from URL query params (e.g. ?mesa=3) with sesionActivaId session lifecycle
@@ -1716,6 +1810,48 @@ export default function App() {
     }
   };
 
+  // Abrir mesa rápidamente desde Caja / Gestión de Mesas (origen: 'caja')
+  const handleQuickOpenTable = async ({
+    table,
+    nota,
+    celular,
+  }: {
+    table: Table;
+    nota?: string;
+    celular?: string;
+  }) => {
+    try {
+      const sesionActivaId = await abrirMesaDesdeCaja({
+        mesaNumber: table.id,
+        tableName: table.name,
+        tableSeats: table.seats,
+        nota,
+        celular,
+      });
+      setTables((prev) =>
+        prev.map((t) =>
+          t.id === table.id
+            ? {
+                ...t,
+                status: 'occupied',
+                estado: 'ocupada',
+                origen: 'caja',
+                sesionActivaId,
+              }
+            : t
+        )
+      );
+      setQuickOpenTable(null);
+      setCurrentTableId(table.id);
+      setModalMode('cart');
+      setActiveTab('menu');
+      showToast(`${table.name} abierta en Caja. Selecciona los platos para enviar a cocina.`);
+    } catch (err) {
+      console.error('Error al abrir mesa desde Caja:', err);
+      showToast('No se pudo abrir la mesa. Intenta nuevamente.', 'error');
+    }
+  };
+
   // Delete Table from Firestore and Local State
   const handleDeleteTable = async (tableId: number) => {
     const table = tables.find(t => t.id === tableId);
@@ -2582,6 +2718,32 @@ export default function App() {
                   </div>
                   
                   <div className="space-y-2">
+                    {isStaffAuthenticated && (isAdminAuthenticated || canAccessTables || canAccessCashier) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const isTableOccupied = table.status !== 'free' || table.estado === 'ocupada';
+                          if (!isTableOccupied) {
+                            setQuickOpenTable(table);
+                          } else {
+                            setCurrentTableId(table.id);
+                            setModalMode('cart');
+                            setActiveTab('menu');
+                            showToast(`${table.name} seleccionada para agregar pedido.`);
+                          }
+                        }}
+                        className="w-full py-2.5 px-3 rounded-[12px] bg-[#ff7a00] hover:bg-[#ff8c1a] text-white text-[13px] font-bold transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer shadow-[0_4px_16px_rgba(255,122,0,0.35)]"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>
+                          {table.status !== 'free' || table.estado === 'ocupada'
+                            ? 'Agregar Pedido'
+                            : 'Tomar Pedido'}
+                        </span>
+                      </button>
+                    )}
+
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -2594,7 +2756,7 @@ export default function App() {
                     {table.status !== 'free' ? (
                       isStaffAuthenticated ? (
                         <>
-                          {canAccessCashier && (
+                          {canAccessCashier && table.currentOrder && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -3385,6 +3547,13 @@ export default function App() {
         table={tableToDelete}
         onClose={() => setTableToDelete(null)}
         onConfirmDelete={handleDeleteTable}
+      />
+
+      {/* Quick Open Table Modal (Caja) */}
+      <QuickOpenTableModal
+        table={quickOpenTable}
+        onClose={() => setQuickOpenTable(null)}
+        onConfirm={handleQuickOpenTable}
       />
 
       {/* Modales para Funcionalidad de Cambio de Mesa */}

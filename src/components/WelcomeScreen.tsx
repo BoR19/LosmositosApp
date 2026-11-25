@@ -44,8 +44,53 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
     const validateTableSession = async () => {
       setIsCheckingSession(true);
       try {
-        const snap = await getDoc(doc(db, 'mesas', String(mesaNumber)));
+        const [snap, activaSnap] = await Promise.all([
+          getDoc(doc(db, 'mesas', String(mesaNumber))),
+          getDoc(doc(db, 'mesas_activas', `mesa_${mesaNumber}`)),
+        ]);
         const tableData = snap.exists() ? snap.data() : null;
+        const activaData = activaSnap.exists() ? activaSnap.data() : null;
+
+        // Si la mesa ya fue abierta en Caja (estado: 'ocupada', origen: 'caja'), saltar bienvenida automáticamente
+        const cajaSessionId =
+          typeof activaData?.sesionActivaId === 'string' && activaData.sesionActivaId
+            ? activaData.sesionActivaId
+            : typeof tableData?.sesionActivaId === 'string' && tableData.sesionActivaId
+              ? tableData.sesionActivaId
+              : null;
+        const isOpenedFromCaja = Boolean(
+          cajaSessionId &&
+            ((activaData?.estado === 'ocupada' && activaData?.origen === 'caja') ||
+              (tableData?.estado === 'ocupada' && tableData?.origen === 'caja'))
+        );
+
+        if (isOpenedFromCaja && cajaSessionId) {
+          const cajaPhone = String(activaData?.cliente_celular || '')
+            .replace(/\D/g, '')
+            .slice(0, 8);
+          const nowIso = new Date().toISOString();
+          try {
+            localStorage.setItem('churo_mesa', String(mesaNumber));
+            localStorage.setItem('churo_sesion_id', cajaSessionId);
+            localStorage.setItem('churo_sesion_activa', 'true');
+            localStorage.setItem('churo_fecha', nowIso);
+            localStorage.setItem('churo_fecha_inicio', nowIso);
+            if (cajaPhone) {
+              localStorage.setItem('churo_celular', cajaPhone);
+            } else {
+              localStorage.removeItem('churo_celular');
+            }
+            sessionStorage.setItem(`welcome_done_${mesaNumber}`, 'true');
+            sessionStorage.setItem(`churo_welcome_dismissed_${mesaNumber}`, 'true');
+          } catch {
+            // ignore storage errors
+          }
+          if (active) {
+            onComplete(cajaPhone || undefined, cajaSessionId);
+          }
+          return;
+        }
+
         const localSessionId =
           typeof localStorage !== 'undefined' ? localStorage.getItem('churo_sesion_id') : null;
         const localMesa =
@@ -93,10 +138,12 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
     };
   }, [mesaNumber]);
 
+  const BOLIVIA_PHONE_REGEX = /^[67]\d{7}$/;
   const cleanCelular = celular.replace(/\D/g, '').slice(0, 8);
-  const isValidNumber =
-    cleanCelular.length === 8 && (cleanCelular.startsWith('6') || cleanCelular.startsWith('7'));
+  const isValidNumber = BOLIVIA_PHONE_REGEX.test(cleanCelular);
   const hasStartedTyping = cleanCelular.length > 0;
+  const INVALID_PHONE_MSG =
+    'Ingresa un número de celular válido de Bolivia (8 dígitos empezando con 6 o 7)';
 
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value.replace(/\D/g, '').slice(0, 8);
@@ -107,14 +154,8 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   const handleContinueWithPhone = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
 
-    if (!isValidNumber) {
-      if (cleanCelular.length === 0) {
-        setErrorMsg('Ingresa un número de celular de 8 dígitos.');
-      } else if (cleanCelular.length < 8) {
-        setErrorMsg('El número debe tener exactamente 8 dígitos.');
-      } else {
-        setErrorMsg('El celular debe comenzar con 6 o 7.');
-      }
+    if (!BOLIVIA_PHONE_REGEX.test(cleanCelular)) {
+      setErrorMsg(INVALID_PHONE_MSG);
       return;
     }
 
@@ -249,9 +290,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
 
           {hasStartedTyping && !isValidNumber && (
             <p className="text-[11px] text-amber-400 font-medium px-1 text-center">
-              {cleanCelular.length < 8
-                ? `Faltan ${8 - cleanCelular.length} dígitos (ej: 72451234)`
-                : 'Debe iniciar con 6 o 7 (números móviles en Bolivia)'}
+              {INVALID_PHONE_MSG}
             </p>
           )}
 

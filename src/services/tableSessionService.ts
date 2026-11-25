@@ -99,6 +99,7 @@ export async function activarSesionMesa(params: {
         seats: resolvedSeats,
         status: 'occupied',
         estado: 'ocupada',
+        origen: 'qr',
         sesionActivaId: resolvedSessionId,
         sesionIniciadaAt: serverTimestamp(),
       },
@@ -117,6 +118,7 @@ export async function activarSesionMesa(params: {
       updatedAt: nowIso,
     };
     if (wasFree) {
+      payload.origen = 'qr';
       payload.cliente_llego = serverTimestamp();
       payload.cliente_celular = cleanPhone || null;
     } else if (cleanPhone) {
@@ -255,6 +257,7 @@ export async function liberarMesaYReiniciarSesion(params: {
       seats: tableSeats,
       status: 'free',
       estado: 'libre',
+      origen: null,
       currentOrder: null,
       sesionActivaId: null,
       liberadaAt: serverTimestamp(),
@@ -268,4 +271,69 @@ export async function liberarMesaYReiniciarSesion(params: {
   } catch (delErr) {
     console.warn('Error al eliminar mesas_activas al liberar mesa:', delErr);
   }
+}
+
+export async function abrirMesaDesdeCaja(params: {
+  mesaNumber: number;
+  tableName?: string;
+  tableSeats?: number;
+  nota?: string;
+  celular?: string;
+}): Promise<string> {
+  const { mesaNumber, tableName, tableSeats = 4, nota = '', celular = '' } = params;
+  const cleanPhone = celular.replace(/\D/g, '').slice(0, 8);
+  const cleanNota = nota.trim().slice(0, 80);
+  const nowIso = new Date().toISOString();
+  const sesionActivaId = generateTableSessionId(mesaNumber);
+  const resolvedName = tableName || `Mesa ${mesaNumber}`;
+
+  await setDoc(
+    doc(db, 'mesas', String(mesaNumber)),
+    {
+      id: Number(mesaNumber),
+      name: resolvedName,
+      seats: tableSeats,
+      status: 'occupied',
+      estado: 'ocupada',
+      origen: 'caja',
+      sesionActivaId,
+      sesionIniciadaAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await setDoc(
+    doc(db, 'mesas_activas', `mesa_${mesaNumber}`),
+    {
+      mesa: Number(mesaNumber),
+      sesionActivaId,
+      estado: 'ocupada',
+      origen: 'caja',
+      cliente_nombre: cleanNota || null,
+      cliente_celular: cleanPhone || null,
+      cliente_llego: serverTimestamp(),
+      updatedAt: nowIso,
+    },
+    { merge: true }
+  );
+
+  if (cleanPhone) {
+    try {
+      await setDoc(
+        doc(db, 'clientes', cleanPhone),
+        {
+          celular: cleanPhone,
+          ultima_mesa: Number(mesaNumber),
+          ultima_visita: serverTimestamp(),
+          visitas: increment(1),
+          updatedAt: nowIso,
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.warn('Error registrando cliente desde Caja:', err);
+    }
+  }
+
+  return sesionActivaId;
 }

@@ -21,6 +21,7 @@ export interface Table {
   seats: number;
   status: 'free' | 'occupied' | 'reserved' | 'por-pagar';
   estado?: 'libre' | 'ocupada';
+  origen?: 'caja' | 'qr' | null;
   sesionActivaId?: string | null;
   currentOrder?: {
     id: string;
