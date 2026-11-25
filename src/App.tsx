@@ -726,6 +726,26 @@ export default function App() {
     setCurrentTableId(tableId);
   };
 
+  // Abrir CartModal precargado con la mesa tocada (desde Gestión de Mesas o Cocina KDS)
+  const openTableInCart = (tableId: number) => {
+    setCurrentTableId(tableId);
+    const targetOrder = orders.find(
+      (o) => o.tableId === tableId && o.status !== 'pagado' && o.status !== 'cancelado'
+    );
+    // Si es Cajero (sin permiso de mesas y no admin) y la mesa tiene consumo, abrir directo en Cobro
+    const openDirectlyInBill = Boolean(
+      targetOrder && canAccessCashier && !canAccessTables && !isAdminAuthenticated
+    );
+    setCashAmount('');
+    setModalMode(openDirectlyInBill ? 'bill' : 'cart');
+    setCustomerModalOpen(true);
+  };
+
+  const selectedTableObject = useMemo(() => {
+    if (currentTableId === null) return null;
+    return tables.find((t) => t.id === Number(currentTableId)) || null;
+  }, [tables, currentTableId]);
+
 
 
   // Active Order for Current Selected Table
@@ -897,6 +917,42 @@ export default function App() {
     } catch (e) {
       console.error("Error al cancelar comanda:", e);
       showToast("Error al cancelar la comanda", "error");
+    }
+  };
+
+  // Anular ítem individual de una comanda activa (estrictamente solo Administrador)
+  const handleRemoveOrderItem = async (orderId: string, itemIndex: number) => {
+    if (!isAdminAuthenticated) {
+      showToast('Solo el Administrador puede anular ítems ya enviados a cocina.', 'error');
+      return;
+    }
+    const targetOrder = orders.find((o) => o.id === orderId);
+    if (!targetOrder) return;
+
+    const removedItem = targetOrder.items[itemIndex];
+    const remainingItems = targetOrder.items.filter((_, idx) => idx !== itemIndex);
+    const updatedTotal = Number(
+      remainingItems.reduce((sum, item) => sum + item.precioBs * item.qty, 0).toFixed(2)
+    );
+
+    try {
+      if (remainingItems.length === 0) {
+        await updateDoc(doc(db, 'pedidos', orderId), {
+          items: [],
+          total: 0,
+          status: 'cancelado',
+        });
+        showToast('Último ítem anulado. Comanda cancelada y mesa liberada.');
+      } else {
+        await updateDoc(doc(db, 'pedidos', orderId), {
+          items: remainingItems,
+          total: updatedTotal,
+        });
+        showToast(`Ítem "${removedItem?.nombre || 'Plato'}" anulado de la comanda.`);
+      }
+    } catch (e) {
+      console.error('Error al anular ítem de la comanda:', e);
+      showToast('No se pudo anular el ítem en la base de datos.', 'error');
     }
   };
 
@@ -1201,7 +1257,7 @@ export default function App() {
   };
 
   // Payment Confirmation & Table Liberation in Firestore (Staff Only)
-  const handlePayment = async (method: 'QR' | 'EFECTIVO') => {
+  const handlePayment = async (method: 'QR' | 'EFECTIVO', discountBs: number = 0) => {
     if (!isStaffAuthenticated || !canAccessCashier) {
       showToast("Operación denegada. Requiere permiso de Caja y Cobros para cobrar y liberar mesas.", "error");
       return;
@@ -1225,10 +1281,13 @@ export default function App() {
 
     try {
       if (activeOrder) {
+        const cleanDiscount = Math.max(0, Math.min(discountBs, activeOrder.total));
+        const finalTotal = Number((activeOrder.total - cleanDiscount).toFixed(2));
         await updateDoc(doc(db, 'pedidos', activeOrder.id), {
           status: 'pagado',
           paidAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          paymentMethod: method
+          paymentMethod: method,
+          ...(cleanDiscount > 0 ? { discountBs: cleanDiscount, total: finalTotal } : {})
         });
       }
       // Actualizar mesa en Firestore a libre
@@ -2162,35 +2221,53 @@ export default function App() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {tables.map(table => (
-                <div key={`table-card-${table.id}`} className="bg-[#292524] border border-[#3a3632] rounded-[20px] p-6 flex flex-col justify-between gap-6 shadow-md">
+                <div key={`table-card-${table.id}`} className="bg-[#292524] border border-[#3a3632] rounded-[20px] p-6 flex flex-col justify-between gap-6 shadow-md transition-colors hover:border-[#ff7a00]/40">
                   <div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-[#ff7a00]">
-                        Mesa #{table.id}
-                      </span>
-                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
-                        table.status === 'free' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 
-                        table.status === 'por-pagar' ? 'bg-red-950 text-red-300 border border-red-800' : 
-                        'bg-amber-950 text-amber-300 border border-amber-800'
-                      }`}>
-                        {table.status === 'free' ? 'Libre' : table.status === 'por-pagar' ? 'Por Pagar' : 'Ocupada'}
-                      </span>
-                    </div>
-                    <h3 className="text-[18px] font-serif font-bold text-[#f5efe6] mt-2">{table.name}</h3>
-                    <p className="text-xs text-[#a8a29e] mt-1">{table.seats} comensales</p>
-
-                    {table.currentOrder && (
-                      <div className="mt-3 p-3 rounded-xl bg-[#1c1917] border border-[#3a3632] space-y-1.5">
-                        <div className="flex justify-between text-xs">
-                          <span className="text-[#a8a29e]">Consumo en curso:</span>
-                          <span className="text-[#ff7a00] font-black text-sm">Bs. {table.currentOrder.total.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between text-[11px] text-[#a8a29e]">
-                          <span>{table.currentOrder.items.length} ítems</span>
-                          <span>Hora: {table.currentOrder.time}</span>
-                        </div>
+                    {/* Cabecera interactiva Click-to-Cart */}
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openTableInCart(table.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openTableInCart(table.id);
+                        }
+                      }}
+                      className="group cursor-pointer rounded-2xl p-2.5 -m-2.5 transition-all hover:bg-[#1c1917]/60 focus:outline-none focus:ring-2 focus:ring-[#ff7a00]/50"
+                      title={`Abrir carrito/comanda de ${table.name}`}
+                    >
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-[#ff7a00] flex items-center gap-1.5">
+                          <span>Mesa #{table.id}</span>
+                          <span className="text-[10px] font-semibold lowercase text-[#a8a29e] opacity-0 group-hover:opacity-100 transition-opacity">
+                            • abrir
+                          </span>
+                        </span>
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
+                          table.status === 'free' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 
+                          table.status === 'por-pagar' ? 'bg-red-950 text-red-300 border border-red-800' : 
+                          'bg-amber-950 text-amber-300 border border-amber-800'
+                        }`}>
+                          {table.status === 'free' ? 'Libre' : table.status === 'por-pagar' ? 'Por Pagar' : 'Ocupada'}
+                        </span>
                       </div>
-                    )}
+                      <h3 className="text-[18px] font-serif font-bold text-[#f5efe6] group-hover:text-[#ff7a00] transition-colors mt-2">{table.name}</h3>
+                      <p className="text-xs text-[#a8a29e] mt-1">{table.seats} comensales</p>
+
+                      {table.currentOrder && (
+                        <div className="mt-3 p-3 rounded-xl bg-[#1c1917] border border-[#3a3632] group-hover:border-[#ff7a00]/40 transition-colors space-y-1.5">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-[#a8a29e]">Consumo en curso:</span>
+                            <span className="text-[#ff7a00] font-black text-sm">Bs. {table.currentOrder.total.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between text-[11px] text-[#a8a29e]">
+                            <span>{table.currentOrder.items.length} ítems</span>
+                            <span>Hora: {table.currentOrder.time}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
 
                     {/* Aviso de solicitud de cambio para esta mesa específica */}
                     {pendingChangeRequests.some(r => r.mesa_origen === table.id) && (
@@ -2200,7 +2277,8 @@ export default function App() {
                           <span>Solicitud de cambio</span>
                         </span>
                         <button
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             const req = pendingChangeRequests.find(r => r.mesa_origen === table.id);
                             setMoveStaffModal({
                               isOpen: true,
@@ -2223,7 +2301,8 @@ export default function App() {
                           {waiterCalls.find(c => c.tableId === table.id)?.type === 'mozo' ? 'Mozo solicitado' : 'Cuenta solicitada'}
                         </span>
                         <button
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             const call = waiterCalls.find(c => c.tableId === table.id);
                             if (call) attendWaiterCall(call.id);
                           }}
@@ -2237,7 +2316,10 @@ export default function App() {
                   
                   <div className="space-y-2">
                     <button
-                      onClick={() => setQrModalTable(table)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setQrModalTable(table);
+                      }}
                       className="w-full py-2.5 px-3 rounded-[12px] bg-[#3a3632] hover:bg-[#ff7a00] text-[13px] font-semibold text-white transition-colors flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <QrCode className="w-4 h-4" /> Ver / Imprimir QR
@@ -2247,7 +2329,8 @@ export default function App() {
                         <>
                           {canAccessCashier && (
                             <button
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 setCurrentTableId(table.id);
                                 setModalMode('bill');
                                 setCashAmount('');
@@ -2259,7 +2342,8 @@ export default function App() {
                             </button>
                           )}
                           <button
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.stopPropagation();
                               const req = pendingChangeRequests.find(r => r.mesa_origen === table.id);
                               setMoveStaffModal({
                                 isOpen: true,
@@ -2278,7 +2362,10 @@ export default function App() {
                     ) : (
                       isStaffAuthenticated ? (
                         <button
-                          onClick={() => setTableToDelete(table)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTableToDelete(table);
+                          }}
                           className="w-full py-2 px-3 rounded-[12px] bg-[#1c1917] hover:bg-red-950/60 border border-[#3a3632] hover:border-red-500/40 text-[12px] font-semibold text-[#a8a29e] hover:text-red-300 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                           title="Eliminar mesa del restaurante"
                         >
@@ -2322,24 +2409,44 @@ export default function App() {
                     {orders
                       .filter(o => o.status !== 'pagado' && o.status !== 'cancelado')
                       .map(order => (
-                      <div key={`kitchen-order-${order.id}`} className="bg-[#292524] border border-[#3a3632] rounded-[20px] p-6 space-y-4 flex flex-col justify-between shadow-lg">
+                      <div key={`kitchen-order-${order.id}`} className="bg-[#292524] border border-[#3a3632] hover:border-[#ff7a00]/40 rounded-[20px] p-6 space-y-4 flex flex-col justify-between shadow-lg transition-colors">
                         <div className="space-y-3">
-                          <div className="flex justify-between items-center">
-                            <span className="text-sm font-bold text-[#ff7a00]">{order.id}</span>
-                            <div className="flex items-center gap-2">
-                              {order.hasAddition && (
-                                <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold animate-pulse">
-                                  🔥 Adición {order.additionTime}
+                          {/* Cabecera interactiva Click-to-Cart en Comanda KDS */}
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openTableInCart(order.tableId)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                openTableInCart(order.tableId);
+                              }
+                            }}
+                            className="group cursor-pointer rounded-2xl p-2.5 -m-2.5 transition-all hover:bg-[#1c1917]/60 space-y-2 focus:outline-none focus:ring-2 focus:ring-[#ff7a00]/50"
+                            title={`Abrir detalle y acciones de ${order.tableName}`}
+                          >
+                            <div className="flex justify-between items-center gap-2">
+                              <span className="text-sm font-bold text-[#ff7a00] truncate">{order.id}</span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {order.hasAddition && (
+                                  <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold animate-pulse">
+                                    🔥 Adición {order.additionTime}
+                                  </span>
+                                )}
+                                <span className="text-xs text-[#a8a29e] flex items-center gap-1">
+                                  <Clock className="w-3.5 h-3.5" /> {order.time}
                                 </span>
-                              )}
-                              <span className="text-xs text-[#a8a29e] flex items-center gap-1">
-                                <Clock className="w-3.5 h-3.5" /> {order.time}
-                              </span>
+                              </div>
                             </div>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <h4 className="text-base font-serif font-bold text-[#f5efe6]">{order.tableName}</h4>
-                            <span className="text-xs font-extrabold text-[#ff7a00]">Bs. {order.total.toFixed(2)}</span>
+                            <div className="flex items-center justify-between gap-2">
+                              <h4 className="text-base font-serif font-bold text-[#f5efe6] group-hover:text-[#ff7a00] transition-colors flex items-center gap-1.5">
+                                <span>{order.tableName}</span>
+                                <span className="text-[10px] font-sans font-semibold text-[#a8a29e] opacity-0 group-hover:opacity-100 transition-opacity">
+                                  • abrir
+                                </span>
+                              </h4>
+                              <span className="text-xs font-extrabold text-[#ff7a00]">Bs. {order.total.toFixed(2)}</span>
+                            </div>
                           </div>
                           <div className="border-t border-[#3a3632] pt-3 space-y-2">
                             {order.items.map((item) => (
@@ -2359,7 +2466,10 @@ export default function App() {
                         </div>
                         <div className="pt-4 border-t border-[#3a3632] flex flex-wrap gap-2">
                           <button 
-                            onClick={() => updateOrderStatus(order.id, 'en-preparacion')}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              updateOrderStatus(order.id, 'en-preparacion');
+                            }}
                             className={`flex-1 py-2 px-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                               order.status === 'en-preparacion' ? 'bg-amber-600 text-white font-bold' : 'bg-[#1c1917] text-[#a8a29e]'
                             }`}
@@ -2367,7 +2477,10 @@ export default function App() {
                             En Fogones
                           </button>
                           <button 
-                            onClick={() => updateOrderStatus(order.id, 'servido')}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              updateOrderStatus(order.id, 'servido');
+                            }}
                             className={`flex-1 py-2 px-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                               order.status === 'servido' ? 'bg-emerald-600 text-white font-bold' : 'bg-[#1c1917] text-[#a8a29e]'
                             }`}
@@ -2376,7 +2489,10 @@ export default function App() {
                           </button>
                           {canAccessCashier && (
                             <button 
-                              onClick={() => liberateTable(order.tableId)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                liberateTable(order.tableId);
+                              }}
                               className="py-2 px-2.5 rounded-xl text-xs font-semibold bg-[#3a3632] hover:bg-emerald-700 text-emerald-300 hover:text-white transition-colors cursor-pointer"
                               title="Cobrar comanda y liberar mesa"
                             >
@@ -2901,13 +3017,31 @@ export default function App() {
             setModalMode('bill');
           }
         }}
+        onSwitchMode={(mode) => {
+          setCashAmount('');
+          setModalMode(mode);
+        }}
         isClientMode={isClientMode}
         isStaffAuthenticated={isStaffAuthenticated}
+        isAdminAuthenticated={isAdminAuthenticated}
+        canTakeOrders={isAdminAuthenticated || canAccessTables}
+        canManageKitchen={isAdminAuthenticated || canAccessKitchen}
         canCharge={canAccessCashier}
         staffName={user?.displayName || staffSession?.name || 'Personal'}
         onStaffLoginSuccess={(session) => setStaffSession(session)}
         onCallWaiterForBill={handleCallWaiterForBill}
         onRequestTableChange={() => setIsRequestChangeModalOpen(true)}
+        onUpdateOrderStatus={updateOrderStatus}
+        onRemoveOrderItem={handleRemoveOrderItem}
+        onOpenTableMove={(table) => {
+          const req = pendingChangeRequests.find(r => r.mesa_origen === table.id);
+          setMoveStaffModal({
+            isOpen: true,
+            sourceTable: table,
+            requestId: req?.id,
+            requestDetails: req || null
+          });
+        }}
       />
 
       {/* Floating Mobile Cart Bar (Hides when Cart Modal is Open) */}
@@ -2915,6 +3049,7 @@ export default function App() {
         cart={cart}
         cartTotal={cartTotal}
         isOpen={customerModalOpen}
+        selectedTable={selectedTableObject}
         onOpenCart={() => {
           setModalMode('cart');
           setCustomerModalOpen(true);

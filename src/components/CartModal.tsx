@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  X, ShoppingBag, Plus, Minus, Trash2, Send, CheckCircle2, Utensils, 
-  FileText, Sparkles, DollarSign, QrCode, AlertTriangle, ShieldCheck, 
-  Lock, KeyRound, Bell, ArrowRight, Check, Printer, MessageSquare, Smartphone,
-  ArrowRightLeft
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  X, ShoppingBag, Plus, Minus, Trash2, Send, CheckCircle2, Utensils,
+  FileText, Sparkles, DollarSign, QrCode, ShieldCheck,
+  Lock, KeyRound, Bell, Check, ArrowRightLeft, ChefHat, Flame, Percent
 } from 'lucide-react';
 import { doc, getDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -24,19 +23,45 @@ interface CartModalProps {
   onUpdateQty: (id: string, delta: number) => void;
   onRemoveItem: (id: string) => void;
   onPlaceOrder: () => void;
-  onPayment: (method: 'QR' | 'EFECTIVO') => void;
+  onPayment: (method: 'QR' | 'EFECTIVO', discountBs?: number) => void;
   cashAmount: string;
   setCashAmount: (val: string) => void;
   onViewMenu: () => void;
   onSwitchToBill?: () => void;
+  onSwitchMode?: (mode: 'cart' | 'bill') => void;
   isClientMode?: boolean;
   isStaffAuthenticated?: boolean;
+  isAdminAuthenticated?: boolean;
+  canTakeOrders?: boolean;
+  canManageKitchen?: boolean;
   canCharge?: boolean;
   staffName?: string;
   onStaffLoginSuccess?: (session: any) => void;
   onCallWaiterForBill?: () => void;
   onRequestTableChange?: () => void;
+  onUpdateOrderStatus?: (orderId: string, newStatus: string) => void;
+  onRemoveOrderItem?: (orderId: string, itemIndex: number) => void;
+  onOpenTableMove?: (table: Table) => void;
 }
+
+const ORDER_STATUS_LABEL: Record<string, { label: string; badgeClass: string }> = {
+  pendiente: {
+    label: 'Pendiente',
+    badgeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+  },
+  'en-preparacion': {
+    label: 'En Fogones',
+    badgeClass: 'bg-orange-500/20 text-orange-300 border-orange-500/40',
+  },
+  servido: {
+    label: 'Servido',
+    badgeClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+  },
+  'por-pagar': {
+    label: 'Por Pagar',
+    badgeClass: 'bg-red-500/20 text-red-300 border-red-500/40',
+  },
+};
 
 export const CartModal: React.FC<CartModalProps> = ({
   isOpen,
@@ -56,49 +81,63 @@ export const CartModal: React.FC<CartModalProps> = ({
   setCashAmount,
   onViewMenu,
   onSwitchToBill,
+  onSwitchMode,
   isClientMode: propIsClientMode,
   isStaffAuthenticated = false,
+  isAdminAuthenticated = false,
+  canTakeOrders = false,
+  canManageKitchen = false,
   canCharge = true,
   staffName = 'Personal',
   onStaffLoginSuccess,
   onCallWaiterForBill,
   onRequestTableChange,
+  onUpdateOrderStatus,
+  onRemoveOrderItem,
+  onOpenTableMove,
 }) => {
   // Method tab for billing view ('EFECTIVO' | 'QR')
   const [billMethod, setBillMethod] = useState<'EFECTIVO' | 'QR'>('EFECTIVO');
+  const [discountInput, setDiscountInput] = useState<string>('');
+
+  // QR verification in mobile banking by staff
+  const [qrVerified, setQrVerified] = useState<boolean>(false);
+
+  // Feedback visual temporal al llamar al mozo
+  const [waiterRequested, setWaiterRequested] = useState<boolean>(false);
+
+  // Inline staff PIN login if waiter/cashier is on table/customer device
+  const [showInlinePin, setShowInlinePin] = useState<boolean>(false);
+  const [inlinePin, setInlinePin] = useState<string>('');
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [isVerifyingInlinePin, setIsVerifyingInlinePin] = useState<boolean>(false);
+
+  // Requerimientos de Recibo y Cliente
+  const [tipoEntrega, setTipoEntrega] = useState<'whatsapp' | 'ticket' | 'ambas'>('ambas');
+  const [clienteCelular, setClienteCelular] = useState<string>('');
+  const [isConfirmingDelivery, setIsConfirmingDelivery] = useState<boolean>(false);
 
   // Detect staff vs client mode
   const mesaQR = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('mesa') : null;
   const isStaff = Boolean(
     isStaffAuthenticated ||
     (typeof window !== 'undefined' && (
-      window.location.pathname.includes('/admin') || 
+      window.location.pathname.includes('/admin') ||
       window.location.pathname.includes('/mesas')
     ))
   );
-  const isClient = propIsClientMode !== undefined 
-    ? propIsClientMode 
+  const isClient = propIsClientMode !== undefined
+    ? propIsClientMode
     : Boolean(!isStaff && (mesaQR || (typeof localStorage !== 'undefined' && localStorage.getItem('churo_mesa'))));
   const effectiveMesaQR = mesaQR || (typeof localStorage !== 'undefined' ? localStorage.getItem('churo_mesa') : null) || currentTableId;
   const effectiveTableNumber = isClient ? (Number(effectiveMesaQR) || currentTableId) : currentTableId;
 
-  
-  // Rule 2: QR verification in mobile banking by staff
-  const [qrVerified, setQrVerified] = useState<boolean>(false);
-  
-  // Feedback visual temporal al llamar al mozo
-  const [waiterRequested, setWaiterRequested] = useState<boolean>(false);
-  
-  // Rule 3: Inline staff PIN login if waiter is on table/customer device
-  const [showInlinePin, setShowInlinePin] = useState<boolean>(false);
-  const [inlinePin, setInlinePin] = useState<string>('');
-  const [pinError, setPinError] = useState<string | null>(null);
-
-  // Requerimientos de Recibo y Cliente
-  const [tipoEntrega, setTipoEntrega] = useState<'whatsapp' | 'ticket' | 'ambas'>('ambas');
-  const [clienteCelular, setClienteCelular] = useState<string>('');
-  const [isConfirmingDelivery, setIsConfirmingDelivery] = useState<boolean>(false);
-  const [isVerifyingInlinePin, setIsVerifyingInlinePin] = useState<boolean>(false);
+  // Permisos efectivos en UI
+  const allowTakeOrders = isClient || isAdminAuthenticated || canTakeOrders;
+  const allowKitchenControls = !isClient && (isAdminAuthenticated || canManageKitchen);
+  const allowChargeControls = isStaffAuthenticated && (isAdminAuthenticated || canCharge);
+  const allowRemoveSentItems = !isClient && isAdminAuthenticated;
+  const allowMoveTable = !isClient && isAdminAuthenticated && Boolean(onOpenTableMove);
 
   // Cargar número de celular del cliente (localStorage o Firestore mesas_activas)
   useEffect(() => {
@@ -138,12 +177,12 @@ export const CartModal: React.FC<CartModalProps> = ({
     if (isOpen) {
       window.addEventListener('keydown', handleKeyDown);
       document.body.style.overflow = 'hidden';
-      // Reset verification state when modal opens
       setQrVerified(false);
       setWaiterRequested(false);
       setShowInlinePin(false);
       setInlinePin('');
       setPinError(null);
+      setDiscountInput('');
     }
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
@@ -151,26 +190,41 @@ export const CartModal: React.FC<CartModalProps> = ({
     };
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+  const currentTable = useMemo(() => {
+    if (effectiveTableNumber === null) return null;
+    return tables.find((t) => t.id === Number(effectiveTableNumber)) || null;
+  }, [tables, effectiveTableNumber]);
 
-  const currentTable = effectiveTableNumber !== null ? tables.find(t => t.id === Number(effectiveTableNumber)) || null : null;
-  const isAdditionMode = Boolean(activeOrder && modalMode === 'cart');
-  
-  // Safe order fallback
   const effectiveOrder = activeOrder || (currentTable ? currentTable.currentOrder : null);
+  const isAdditionMode = Boolean(effectiveOrder && modalMode === 'cart');
+  const subtotalToShow = modalMode === 'bill' ? (effectiveOrder?.total || 0) : cartTotal;
+
+  const discountValue = useMemo(() => {
+    if (modalMode !== 'bill' || !allowChargeControls) return 0;
+    const parsed = parseFloat(discountInput);
+    if (isNaN(parsed) || parsed <= 0) return 0;
+    return Math.min(parsed, subtotalToShow);
+  }, [discountInput, modalMode, allowChargeControls, subtotalToShow]);
+
+  const totalToShow = useMemo(() => {
+    if (modalMode === 'bill') {
+      return Math.max(0, Number((subtotalToShow - discountValue).toFixed(2)));
+    }
+    return subtotalToShow;
+  }, [modalMode, subtotalToShow, discountValue]);
+
   const itemsToShow = modalMode === 'bill' ? (effectiveOrder?.items || []) : cart;
-  const totalToShow = modalMode === 'bill' ? (effectiveOrder?.total || 0) : cartTotal;
   const totalItemsCount = cart.reduce((sum, item) => sum + item.qty, 0);
 
+  if (!isOpen) return null;
 
   // =========================================================================
-  // 💰 REGLA 1: LÓGICA DE PAGO EN EFECTIVO (Cálculo y Validación Dinámica)
+  // LÓGICA DE PAGO EN EFECTIVO (Cálculo y Validación Dinámica)
   // =========================================================================
   const cleanCashStr = cashAmount.trim();
   const cashNum = cleanCashStr === '' ? 0 : parseFloat(cleanCashStr);
   const hasEnteredCash = cleanCashStr !== '' && !isNaN(cashNum);
-  
-  // Comparaciones estrictas con el consumo total
+
   const isUnderpaid = hasEnteredCash && cashNum < totalToShow;
   const isPaidOrOver = hasEnteredCash && cashNum >= totalToShow;
 
@@ -200,7 +254,6 @@ export const CartModal: React.FC<CartModalProps> = ({
 
   // Implementación de handleConfirmarYEntregar
   const handleConfirmarYEntregar = async () => {
-    // a) Validar pago
     if (billMethod === 'EFECTIVO' && !isPaidOrOver) {
       return;
     }
@@ -211,10 +264,8 @@ export const CartModal: React.FC<CartModalProps> = ({
     setIsConfirmingDelivery(true);
 
     try {
-      // b) Cobrar: actualiza Firestore mesas y comanda en parent
-      onPayment(billMethod);
+      onPayment(billMethod, discountValue);
 
-      // Evento de pago y liberación de sesión: BEST PRACTICE
       try {
         const mesaActual = String(effectiveTableNumber || currentTable?.id || '');
         localStorage.setItem('churo_sesion_activa', 'false');
@@ -224,23 +275,21 @@ export const CartModal: React.FC<CartModalProps> = ({
         }
         localStorage.setItem('churo_fecha_pago', new Date().toISOString());
         localStorage.removeItem('churo_fecha_inicio');
-        // Mantén churo_celular para pre-llenar la próxima vez
       } catch (stErr) {
         console.warn("Error updating session storage on checkout:", stErr);
       }
 
-      // c) Generar texto limpio de recibo
       const mesaName = currentTable ? currentTable.name : `Mesa #${effectiveTableNumber}`;
-      const fechaStr = new Date().toLocaleString('es-BO', { 
-        dateStyle: 'short', 
-        timeStyle: 'short' 
+      const fechaStr = new Date().toLocaleString('es-BO', {
+        dateStyle: 'short',
+        timeStyle: 'short'
       });
 
       const itemsListText = itemsToShow
         .map((i: any) => `• ${i.qty}x ${i.nombre} - Bs. ${(i.precioBs * i.qty).toFixed(2)}`)
         .join('\n');
 
-      const textoRecibo = 
+      const textoRecibo =
 `🔥 *EL CHURO MOSITO* 🔥
 *Recibo Digital de Consumo*
 ----------------------------------
@@ -251,19 +300,17 @@ export const CartModal: React.FC<CartModalProps> = ({
 *Detalle de Consumo:*
 ${itemsListText}
 ----------------------------------
-💰 *Total:* Bs. ${totalToShow.toFixed(2)}
+${discountValue > 0 ? `🏷️ *Descuento:* -Bs. ${discountValue.toFixed(2)}\n` : ''}💰 *Total:* Bs. ${totalToShow.toFixed(2)}
 ${billMethod === 'EFECTIVO' && hasEnteredCash ? `💵 *Efectivo Entregado:* Bs. ${cashNum.toFixed(2)}\n🪙 *Cambio:* Bs. ${montoVuelto}\n` : ''}----------------------------------
 ¡Muchas gracias por tu visita!
 Gastronomía de Altura • Tarija`;
 
-      // d) Si tipoEntrega es whatsapp o ambas y hay celular
       if ((tipoEntrega === 'whatsapp' || tipoEntrega === 'ambas') && clienteCelular) {
         const cleanPhone = clienteCelular.replace(/\D/g, '');
         const waUrl = `https://wa.me/591${cleanPhone}?text=${encodeURIComponent(textoRecibo)}`;
         window.open(waUrl, '_blank');
       }
 
-      // e) Si tipoEntrega es ticket o ambas: guarda en print_queue
       if (tipoEntrega === 'ticket' || tipoEntrega === 'ambas') {
         console.log('Imprimir ticket 80mm:', textoRecibo);
         try {
@@ -272,6 +319,7 @@ Gastronomía de Altura • Tarija`;
             tableName: mesaName,
             textoRecibo,
             total: totalToShow,
+            descuento: discountValue,
             fecha: serverTimestamp(),
             status: 'pending'
           });
@@ -280,12 +328,12 @@ Gastronomía de Altura • Tarija`;
         }
       }
 
-      // f) Guarda en Firestore tickets_history
       try {
         await addDoc(collection(db, 'tickets_history'), {
           mesa: effectiveTableNumber,
           tableName: mesaName,
           total: totalToShow,
+          descuento: discountValue,
           celular: clienteCelular || null,
           tipoEntrega,
           metodoPago: billMethod,
@@ -302,6 +350,10 @@ Gastronomía de Altura • Tarija`;
     }
   };
 
+  const orderStatusInfo = effectiveOrder
+    ? (ORDER_STATUS_LABEL[effectiveOrder.status || 'pendiente'] || ORDER_STATUS_LABEL.pendiente)
+    : null;
+
   return (
     <div className="fixed inset-0 z-[1200] bg-black/80 backdrop-blur-sm flex justify-end animate-fadeIn">
       {/* Backdrop click to close */}
@@ -309,25 +361,25 @@ Gastronomía de Altura • Tarija`;
 
       {/* Modal Container: fixed 100dvh for zero mobile overflow cut-off */}
       <div className="relative w-full max-w-[520px] bg-[#1c1917] h-[100dvh] max-h-[100dvh] flex flex-col justify-between border-l border-[#3a3632] shadow-2xl z-10 overflow-hidden">
-        
+
         {/* Header (Always Visible) */}
         <div className="shrink-0 p-4 sm:p-5 border-b border-[#3a3632] flex items-center justify-between bg-[#292524]">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-              modalMode === 'bill' 
-                ? 'bg-emerald-500/20 text-emerald-400' 
-                : isAdditionMode 
-                  ? 'bg-amber-500/20 text-amber-400' 
+              modalMode === 'bill'
+                ? 'bg-emerald-500/20 text-emerald-400'
+                : isAdditionMode
+                  ? 'bg-amber-500/20 text-amber-400'
                   : 'bg-[#ff7a00]/20 text-[#ff7a00]'
             }`}>
               {modalMode === 'bill' ? <FileText className="w-5 h-5" /> : <ShoppingBag className="w-5 h-5" />}
             </div>
             <div className="min-w-0">
               <h3 className="text-[17px] sm:text-[18px] font-serif font-bold text-[#f5efe6] leading-tight truncate">
-                {modalMode === 'bill' 
-                  ? 'Cuenta de la Mesa' 
-                  : isAdditionMode 
-                    ? 'Adición a la Comanda' 
+                {modalMode === 'bill'
+                  ? 'Cuenta de la Mesa'
+                  : isAdditionMode
+                    ? 'Comanda y Adición'
                     : 'Tu Pedido en Carrito'}
               </h3>
               <p className="text-[11px] text-[#a8a29e] flex items-center gap-1.5 truncate">
@@ -338,7 +390,7 @@ Gastronomía de Altura • Tarija`;
                     <span className="text-[#ff7a00] font-semibold">{totalItemsCount} {totalItemsCount === 1 ? 'ítem' : 'ítems'}</span>
                   </>
                 )}
-                {modalMode === 'bill' && isStaffAuthenticated && (
+                {isStaffAuthenticated && (
                   <span className="text-emerald-400 font-bold bg-emerald-500/15 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1">
                     <ShieldCheck className="w-3 h-3" /> {staffName}
                   </span>
@@ -357,7 +409,7 @@ Gastronomía de Altura • Tarija`;
 
         {/* Scrollable Content Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 min-h-0 overscroll-contain">
-          {/* Table Selector Box inside Cart: Locked badge in client mode, Select dropdown in staff mode */}
+          {/* Table Selector Box inside Cart: Locked badge in client mode, Select dropdown (combobox) in staff mode */}
           {isClient ? (
             <div className="p-3.5 rounded-xl border border-[#ff7a00]/30 bg-[#292524] space-y-2 shadow-sm">
               <div className="flex items-center justify-between text-xs">
@@ -384,81 +436,278 @@ Gastronomía de Altura • Tarija`;
               </div>
             </div>
           ) : (
-            <div className={`p-3 rounded-xl border flex items-center justify-between text-xs transition-colors ${
-              currentTableId === null ? 'bg-amber-950/30 border-amber-500/50' : 'bg-[#292524] border-[#3a3632]'
-            }`}>
-              <span className="text-[#a8a29e] font-medium flex items-center gap-1.5">
-                <span>Mesa:</span>
-                {currentTableId === null && (
-                  <span className="text-amber-400 font-bold text-[10px]">(Requerida para cobrar/pedir)</span>
-                )}
-              </span>
-              <select
-                value={currentTableId ?? ''}
-                onChange={(e) => onTableChange(Number(e.target.value))}
-                className="bg-[#1c1917] text-[#ff7a00] font-bold border border-[#3a3632] rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-[#ff7a00] cursor-pointer"
-              >
-                <option value="" disabled className="bg-[#1c1917] text-stone-400">
-                  -- Selecciona la Mesa --
-                </option>
-                {tables.map(t => (
-                  <option key={t.id} value={t.id}>
-                    {formatTableOptionLabel(t)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-
-          {/* Active Order Notice if table has an active comanda */}
-          {activeOrder && modalMode === 'cart' && (
-            <div className="bg-amber-950/40 border border-amber-600/40 rounded-xl p-3.5 space-y-1.5">
-              <div className="flex items-center gap-2 text-amber-300 font-bold text-xs">
-                <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>Mesa con Comanda Activa (Bs. {activeOrder.total.toFixed(2)})</span>
-              </div>
-              <p className="text-[11px] text-[#d6d3d1] leading-relaxed">
-                Los nuevos platos o bebidas que agregues se enviarán como una <strong>adición a la misma comanda</strong> sin duplicar la mesa en cocina.
-              </p>
-            </div>
-          )}
-
-          {itemsToShow.length === 0 ? (
-            <div className="text-center py-12 px-4 text-[#a8a29e]">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[#ff7a00]/15 flex items-center justify-center">
-                <ShoppingBag className="w-8 h-8 text-[#ff7a00]" />
-              </div>
-              <p className="text-lg font-bold text-[#f5efe6] mb-1">
-                {modalMode === 'bill' ? 'No hay consumos pendientes' : 'No tienes platos en el carrito'}
-              </p>
-              <p className="text-xs text-[#a8a29e] max-w-xs mx-auto mb-6 leading-relaxed">
-                {modalMode === 'bill'
-                  ? 'Esta mesa no tiene comandas pendientes de pago en este momento.'
-                  : activeOrder
-                    ? 'Tu comanda actual ya está registrada. Agrega nuevos platos o bebidas desde el menú para adicionarlos a tu mesa.'
-                    : 'Explora nuestro menú tradicional y a la leña para añadir tus platos favoritos.'}
-              </p>
-              <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-                <button
-                  onClick={() => {
-                    onClose();
-                    onViewMenu();
-                  }}
-                  className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-bold text-sm shadow-lg transition-transform active:scale-95 inline-flex items-center justify-center gap-2 cursor-pointer"
+            <div className="space-y-2.5">
+              <div className={`p-3 rounded-xl border flex items-center justify-between gap-2 text-xs transition-colors ${
+                currentTableId === null ? 'bg-amber-950/30 border-amber-500/50' : 'bg-[#292524] border-[#3a3632]'
+              }`}>
+                <span className="text-[#a8a29e] font-medium flex items-center gap-1.5 shrink-0">
+                  <span>Mesa:</span>
+                  {currentTableId === null && (
+                    <span className="text-amber-400 font-bold text-[10px]">(Requerida)</span>
+                  )}
+                </span>
+                <select
+                  value={currentTableId ?? ''}
+                  onChange={(e) => onTableChange(Number(e.target.value))}
+                  className="flex-1 max-w-[280px] bg-[#1c1917] text-[#ff7a00] font-bold border border-[#3a3632] rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#ff7a00] cursor-pointer"
                 >
-                  <Utensils className="w-4 h-4" /> Ver Menú Completo
-                </button>
-                {activeOrder && onSwitchToBill && modalMode === 'cart' && (
-                  <button
-                    onClick={onSwitchToBill}
-                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#292524] hover:bg-[#3a3632] text-emerald-400 font-bold text-sm border border-emerald-500/30 transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <FileText className="w-4 h-4" /> Ver Cuenta Activa (Bs. {activeOrder.total.toFixed(2)})
-                  </button>
-                )}
+                  <option value="" disabled className="bg-[#1c1917] text-stone-400">
+                    -- Selecciona la Mesa --
+                  </option>
+                  {tables.map(t => (
+                    <option key={t.id} value={t.id}>
+                      {formatTableOptionLabel(t)}
+                    </option>
+                  ))}
+                </select>
               </div>
+
+              {/* Pestañas rápidas entre Comanda/Adición y Cobro/Cuenta para personal con caja o admin */}
+              {effectiveOrder && isStaffAuthenticated && (allowChargeControls || allowTakeOrders) && onSwitchMode && (
+                <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[#292524] border border-[#3a3632]">
+                  <button
+                    type="button"
+                    onClick={() => onSwitchMode('cart')}
+                    className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                      modalMode === 'cart'
+                        ? 'bg-[#ff7a00] text-white shadow'
+                        : 'text-[#a8a29e] hover:text-[#f5efe6]'
+                    }`}
+                  >
+                    <Utensils className="w-3.5 h-3.5" />
+                    <span>Comanda y Adición</span>
+                  </button>
+                  {allowChargeControls && (
+                    <button
+                      type="button"
+                      onClick={() => onSwitchMode('bill')}
+                      className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                        modalMode === 'bill'
+                          ? 'bg-emerald-600 text-white shadow'
+                          : 'text-[#a8a29e] hover:text-[#f5efe6]'
+                      }`}
+                    >
+                      <DollarSign className="w-3.5 h-3.5" />
+                      <span>Cobro y Cuenta</span>
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
+          )}
+
+          {/* Bloque de Comanda Activa en Mesa (visible en modo 'cart' cuando la mesa tiene consumo en curso) */}
+          {effectiveOrder && modalMode === 'cart' && (
+            <div className="bg-[#292524] border border-[#3a3632] rounded-2xl p-4 space-y-3 shadow-md">
+              <div className="flex items-center justify-between gap-2 border-b border-[#3a3632] pb-2.5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-extrabold text-[#ff7a00] flex items-center gap-1">
+                      <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                      Comanda Activa
+                    </span>
+                    {orderStatusInfo && (
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${orderStatusInfo.badgeClass}`}>
+                        {orderStatusInfo.label}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-[#a8a29e] mt-0.5 truncate">
+                    #{effectiveOrder.id.slice(0, 12)} • {effectiveOrder.time}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="text-[10px] uppercase text-[#a8a29e] block font-bold">Consumo</span>
+                  <span className="text-base font-black text-[#ff7a00]">Bs. {effectiveOrder.total.toFixed(2)}</span>
+                </div>
+              </div>
+
+              {/* Listado de platos ya enviados a cocina */}
+              <div className="space-y-1.5 max-h-[210px] overflow-y-auto pr-1">
+                {effectiveOrder.items.map((item, idx) => {
+                  const orderItemId = 'orderItemId' in item ? item.orderItemId : undefined;
+                  const isAddition = 'isAddition' in item ? Boolean(item.isAddition) : false;
+                  return (
+                  <div
+                    key={orderItemId || `active-ord-${effectiveOrder.id}-${item.id}-${idx}`}
+                    className="flex items-center justify-between gap-2 bg-[#1c1917] px-3 py-2 rounded-xl border border-[#3a3632]/80 text-xs"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-[#f5efe6] truncate">
+                          {item.qty}x {item.nombre}
+                        </span>
+                        {isAddition && (
+                          <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold shrink-0">
+                            Adición
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-[#a8a29e]">
+                        Bs. {item.precioBs.toFixed(2)} c/u
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-bold text-[#ff7a00]">
+                        Bs. {(item.precioBs * item.qty).toFixed(2)}
+                      </span>
+                      {/* Solo Administrador puede anular/eliminar ítems ya enviados a cocina */}
+                      {allowRemoveSentItems && onRemoveOrderItem && (
+                        <button
+                          type="button"
+                          onClick={() => onRemoveOrderItem(effectiveOrder.id, idx)}
+                          className="p-1.5 rounded-lg bg-[#292524] hover:bg-red-950 text-red-400 hover:text-red-300 border border-[#3a3632] hover:border-red-500/40 transition-colors cursor-pointer"
+                          title="Anular ítem de la comanda (Solo Administrador)"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  );
+                })}
+              </div>
+
+              {/* Controles de Cocina (Cocina o Administrador) */}
+              {allowKitchenControls && onUpdateOrderStatus && (
+                <div className="pt-2 border-t border-[#3a3632] space-y-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-[#a8a29e] flex items-center gap-1.5">
+                    <ChefHat className="w-3.5 h-3.5 text-[#ff7a00]" />
+                    Control de Cocina (KDS)
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onUpdateOrderStatus(effectiveOrder.id, 'en-preparacion')}
+                      className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                        effectiveOrder.status === 'en-preparacion'
+                          ? 'bg-amber-600 text-white shadow'
+                          : 'bg-[#1c1917] text-[#a8a29e] hover:text-white border border-[#3a3632]'
+                      }`}
+                    >
+                      <Flame className="w-3.5 h-3.5" />
+                      <span>En Fogones</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onUpdateOrderStatus(effectiveOrder.id, 'servido')}
+                      className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                        effectiveOrder.status === 'servido'
+                          ? 'bg-emerald-600 text-white shadow'
+                          : 'bg-[#1c1917] text-[#a8a29e] hover:text-white border border-[#3a3632]'
+                      }`}
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Servido</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Acciones rápidas en Comanda Activa según rol */}
+              {!isClient && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {allowTakeOrders && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onViewMenu();
+                      }}
+                      className="flex-1 min-w-[140px] py-2 px-3 rounded-xl bg-[#ff7a00] hover:bg-[#ff8c1a] text-white text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Agregar Adición</span>
+                    </button>
+                  )}
+
+                  {allowMoveTable && currentTable && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenTableMove?.(currentTable);
+                      }}
+                      className="py-2 px-3 rounded-xl bg-[#1c1917] hover:bg-[#3a3632] border border-[#3a3632] hover:border-[#ff7a00]/50 text-[#f5efe6] text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <ArrowRightLeft className="w-3.5 h-3.5 text-[#ff7a00]" />
+                      <span>Mover Mesa</span>
+                    </button>
+                  )}
+
+                  {allowChargeControls && onSwitchMode ? (
+                    <button
+                      type="button"
+                      onClick={() => onSwitchMode('bill')}
+                      className="flex-1 min-w-[140px] py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow"
+                    >
+                      <DollarSign className="w-3.5 h-3.5" />
+                      <span>Ir a Cobrar Cuenta</span>
+                    </button>
+                  ) : (allowTakeOrders && onSwitchToBill) && (
+                    <button
+                      type="button"
+                      onClick={onSwitchToBill}
+                      className="flex-1 min-w-[140px] py-2 px-3 rounded-xl bg-[#1c1917] hover:bg-[#3a3632] border border-emerald-500/40 text-emerald-400 text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Solicitar Cuenta</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Lista del carrito local o lista de cuenta */}
+          {itemsToShow.length === 0 ? (
+            modalMode === 'cart' && effectiveOrder ? (
+              allowTakeOrders ? (
+                <div className="p-4 rounded-2xl bg-[#292524]/60 border border-dashed border-[#3a3632] text-center space-y-2">
+                  <p className="text-xs text-[#a8a29e]">
+                    ¿El comensal pidió algo más? Usa <strong className="text-[#f5efe6]">Agregar Adición</strong> para sumar platos del menú sin duplicar la mesa en cocina.
+                  </p>
+                </div>
+              ) : null
+            ) : (
+              <div className="text-center py-12 px-4 text-[#a8a29e]">
+                <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[#ff7a00]/15 flex items-center justify-center">
+                  <ShoppingBag className="w-8 h-8 text-[#ff7a00]" />
+                </div>
+                <p className="text-lg font-bold text-[#f5efe6] mb-1">
+                  {modalMode === 'bill' ? 'No hay consumos pendientes' : 'No tienes platos en el carrito'}
+                </p>
+                <p className="text-xs text-[#a8a29e] max-w-xs mx-auto mb-6 leading-relaxed">
+                  {modalMode === 'bill'
+                    ? 'Esta mesa no tiene comandas pendientes de pago en este momento.'
+                    : currentTable
+                      ? `Mesa lista (${currentTable.name}). Explora el menú para agregar los platos de este pedido.`
+                      : 'Explora nuestro menú tradicional y a la leña para añadir tus platos favoritos.'}
+                </p>
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                  {allowTakeOrders && (
+                    <button
+                      onClick={() => {
+                        onClose();
+                        onViewMenu();
+                      }}
+                      className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-bold text-sm shadow-lg transition-transform active:scale-95 inline-flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Utensils className="w-4 h-4" /> Ver Menú Completo
+                    </button>
+                  )}
+                  {effectiveOrder && onSwitchToBill && modalMode === 'cart' && (
+                    <button
+                      onClick={onSwitchToBill}
+                      className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#292524] hover:bg-[#3a3632] text-emerald-400 font-bold text-sm border border-emerald-500/30 transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4" /> Ver Cuenta Activa (Bs. {effectiveOrder.total.toFixed(2)})
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
           ) : (
             <div className="space-y-4">
               {/* Header de Cuenta de Mesa */}
@@ -466,11 +715,16 @@ Gastronomía de Altura • Tarija`;
                 <div className="bg-[#292524] p-3.5 sm:p-4 rounded-2xl border border-[#3a3632] flex items-center justify-between">
                   <div>
                     <span className="text-[10px] uppercase font-bold tracking-wider text-[#a8a29e] block">
-                      Consumo Total de la Cuenta
+                      {discountValue > 0 ? 'Total Neto con Descuento' : 'Consumo Total de la Cuenta'}
                     </span>
                     <span className="text-[13px] font-semibold text-[#f5efe6]">
                       {currentTable ? currentTable.name : `Mesa #${currentTableId}`}
                     </span>
+                    {discountValue > 0 && (
+                      <span className="text-[10px] text-emerald-400 font-semibold block">
+                        Subtotal Bs. {subtotalToShow.toFixed(2)} - Desc. Bs. {discountValue.toFixed(2)}
+                      </span>
+                    )}
                   </div>
                   <div className="text-right">
                     <span className="text-[22px] sm:text-[24px] font-black text-[#ff7a00] font-sans block leading-none">
@@ -486,7 +740,11 @@ Gastronomía de Altura • Tarija`;
               {/* Items List */}
               <div className="space-y-2">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-[#a8a29e] block">
-                  {modalMode === 'bill' ? 'Detalle de Platos y Bebidas consumidos:' : 'Productos en tu Carrito:'}
+                  {modalMode === 'bill'
+                    ? 'Detalle de Platos y Bebidas consumidos:'
+                    : isAdditionMode
+                      ? 'Nuevos platos a adicionar:'
+                      : 'Productos en tu Carrito:'}
                 </span>
                 <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                   {itemsToShow.map((item: any, index: number) => (
@@ -515,7 +773,7 @@ Gastronomía de Altura • Tarija`;
                         </div>
                       </div>
 
-                      {modalMode === 'cart' ? (
+                      {modalMode === 'cart' && allowTakeOrders ? (
                         <div className="flex items-center gap-1.5 bg-[#1c1917] px-2 py-1 rounded-xl border border-[#3a3632] shrink-0">
                           {item.qty === 1 ? (
                             <button
@@ -544,9 +802,21 @@ Gastronomía de Altura • Tarija`;
                           </button>
                         </div>
                       ) : (
-                        <span className="text-xs font-bold text-[#a8a29e] bg-[#1c1917] px-2.5 py-1 rounded-lg border border-[#3a3632] shrink-0">
-                          {item.qty}x
-                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-xs font-bold text-[#a8a29e] bg-[#1c1917] px-2.5 py-1 rounded-lg border border-[#3a3632]">
+                            {item.qty}x
+                          </span>
+                          {modalMode === 'bill' && allowRemoveSentItems && effectiveOrder && onRemoveOrderItem && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveOrderItem(effectiveOrder.id, index)}
+                              className="p-1.5 rounded-lg bg-[#1c1917] hover:bg-red-950 text-red-400 border border-[#3a3632] hover:border-red-500/40 transition-colors cursor-pointer"
+                              title="Anular ítem de la comanda (Solo Administrador)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   ))}
@@ -558,18 +828,46 @@ Gastronomía de Altura • Tarija`;
                * ========================================================================= */}
               {modalMode === 'bill' && (
                 <div className="pt-3 space-y-4 border-t border-[#3a3632]">
-                  
-                  {/* CASO A: PERSONAL AUTORIZADO CON PERMISO DE CAJA */}
-                  {isStaffAuthenticated && canCharge ? (
+
+                  {/* CASO A: PERSONAL AUTORIZADO CON PERMISO DE CAJA (Cajero o Administrador) */}
+                  {allowChargeControls ? (
                     <div className="space-y-4">
+                      {/* Descuento Opcional (Cajero / Administrador) */}
+                      <div className="bg-[#292524] p-3.5 rounded-2xl border border-[#3a3632] flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <span className="text-xs font-bold text-[#f5efe6] flex items-center gap-1.5">
+                            <Percent className="w-3.5 h-3.5 text-[#ff7a00]" />
+                            Descuento (Opcional)
+                          </span>
+                          <span className="text-[10px] text-[#a8a29e] block">
+                            Descuento directo en Bs. antes de cobrar
+                          </span>
+                        </div>
+                        <div className="relative w-32 shrink-0">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[11px] font-bold text-[#a8a29e]">
+                            Bs.
+                          </span>
+                          <input
+                            type="number"
+                            min="0"
+                            max={subtotalToShow}
+                            step="any"
+                            placeholder="0.00"
+                            value={discountInput}
+                            onChange={(e) => setDiscountInput(e.target.value)}
+                            className="w-full bg-[#1c1917] border border-[#3a3632] focus:border-[#ff7a00] rounded-xl pl-9 pr-2.5 py-2 text-xs text-right text-[#f5efe6] font-bold focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
                       {/* Pestañas de Método de Cobro */}
                       <div className="flex rounded-xl bg-[#292524] p-1 border border-[#3a3632]">
                         <button
                           type="button"
                           onClick={() => setBillMethod('EFECTIVO')}
                           className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                            billMethod === 'EFECTIVO' 
-                              ? 'bg-emerald-600 text-white shadow-md' 
+                            billMethod === 'EFECTIVO'
+                              ? 'bg-emerald-600 text-white shadow-md'
                               : 'text-[#a8a29e] hover:text-white'
                           }`}
                         >
@@ -580,8 +878,8 @@ Gastronomía de Altura • Tarija`;
                           type="button"
                           onClick={() => setBillMethod('QR')}
                           className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                            billMethod === 'QR' 
-                              ? 'bg-emerald-600 text-white shadow-md' 
+                            billMethod === 'QR'
+                              ? 'bg-emerald-600 text-white shadow-md'
                               : 'text-[#a8a29e] hover:text-white'
                           }`}
                         >
@@ -619,10 +917,10 @@ Gastronomía de Altura • Tarija`;
                                 value={cashAmount}
                                 onChange={(e) => setCashAmount(e.target.value)}
                                 className={`w-full bg-[#1c1917] rounded-xl pl-10 pr-4 py-2.5 text-sm text-[#f5efe6] font-bold focus:outline-none transition-colors border ${
-                                  isUnderpaid 
-                                    ? 'border-red-500 focus:border-red-500 text-red-200' 
-                                    : isPaidOrOver 
-                                      ? 'border-emerald-500 focus:border-emerald-500 text-emerald-200' 
+                                  isUnderpaid
+                                    ? 'border-red-500 focus:border-red-500 text-red-200'
+                                    : isPaidOrOver
+                                      ? 'border-emerald-500 focus:border-emerald-500 text-emerald-200'
                                       : 'border-[#3a3632] focus:border-emerald-500'
                                 }`}
                               />
@@ -716,9 +1014,7 @@ Gastronomía de Altura • Tarija`;
                         </div>
                       )}
 
-                      {/* =========================================================================
-                       * 📦 NUEVO BLOQUE: ¿CÓMO ENTREGAR RECIBO? (Dark #1E1E1E)
-                       * ========================================================================= */}
+                      {/* ¿CÓMO ENTREGAR RECIBO? */}
                       <div className="bg-[#1E1E1E] border border-zinc-800 rounded-xl p-4 mt-4 text-left shadow-lg">
                         <p className="text-white font-bold text-xs sm:text-sm">¿Cómo entregar recibo?</p>
                         <p className="text-zinc-400 text-xs mt-0.5 font-mono">
@@ -767,15 +1063,13 @@ Gastronomía de Altura • Tarija`;
                         </div>
                       </div>
 
-                      {/* =========================================================================
-                       * 🔥 BOTÓN FINAL: CONFIRMAR Y ENTREGAR
-                       * ========================================================================= */}
+                      {/* BOTÓN FINAL: CONFIRMAR Y ENTREGAR */}
                       <button
                         type="button"
                         onClick={handleConfirmarYEntregar}
                         disabled={
-                          isConfirmingDelivery || 
-                          (billMethod === 'EFECTIVO' && !isPaidOrOver) || 
+                          isConfirmingDelivery ||
+                          (billMethod === 'EFECTIVO' && !isPaidOrOver) ||
                           (billMethod === 'QR' && !qrVerified)
                         }
                         className={`w-full mt-4 py-4 px-4 rounded-xl font-black text-sm text-black transition-all flex items-center justify-center gap-2 border border-amber-300/30 active:scale-98 ${
@@ -791,7 +1085,7 @@ Gastronomía de Altura • Tarija`;
                     </div>
                   ) : (
                     /* =========================================================================
-                     * 3. CONTROL DE SEGURIDAD Y VISTA DE COMENSAL:
+                     * VISTA DE COMENSAL O PERSONAL SIN PERMISO DE CAJA
                      * ========================================================================= */
                     <div className="space-y-4">
                       {/* Banner Informativo para Comensal */}
@@ -816,19 +1110,21 @@ Gastronomía de Altura • Tarija`;
                         </div>
                       </div>
 
-                      {/* Nota de Cobro Exclusivo por Personal */}
+                      {/* Nota de Cobro Exclusivo por Personal de Caja */}
                       <div className="p-3.5 rounded-xl bg-amber-950/30 border border-amber-600/30 text-amber-200/90 text-xs space-y-1.5">
                         <div className="flex items-center gap-1.5 font-bold text-amber-300">
                           <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
-                          <span>Instrucciones para Comensales</span>
+                          <span>{isStaffAuthenticated ? 'Requiere Permiso de Caja' : 'Instrucciones para Comensales'}</span>
                         </div>
                         <p className="text-[11px] text-[#d6d3d1] leading-relaxed">
-                          Puedes transferir con el código QR superior o pagar en efectivo con tu mozo.
-                          <strong> El personal del restaurante verificará el pago y liberará la mesa en el sistema.</strong>
+                          {isStaffAuthenticated
+                            ? 'Tu cuenta no tiene habilitado el permiso de Caja y Cobros. Un Cajero o Administrador debe confirmar el pago para liberar la mesa.'
+                            : <>Puedes transferir con el código QR superior o pagar en efectivo con tu mozo.<strong> El personal del restaurante verificará el pago y liberará la mesa en el sistema.</strong></>
+                          }
                         </p>
                       </div>
 
-                      {/* Botón para solicitar atención del mozo para pagar */}
+                      {/* Botón para solicitar atención del mozo/cajero para pagar */}
                       {onCallWaiterForBill && (
                         <button
                           type="button"
@@ -839,75 +1135,77 @@ Gastronomía de Altura • Tarija`;
                           }}
                           disabled={waiterRequested}
                           className={`w-full py-3.5 px-4 rounded-[14px] font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer ${
-                            waiterRequested 
-                              ? 'bg-emerald-600 text-white cursor-default' 
+                            waiterRequested
+                              ? 'bg-emerald-600 text-white cursor-default'
                               : 'bg-amber-600 hover:bg-amber-700 active:scale-95 text-white'
                           }`}
                         >
                           {waiterRequested ? (
                             <>
                               <Check className="w-4 h-4 text-emerald-200" />
-                              <span>¡Mozo Notificado! En breve se acercará a tu mesa</span>
+                              <span>¡Personal Notificado! En breve se acercará a la mesa</span>
                             </>
                           ) : (
                             <>
                               <Bell className="w-4 h-4 animate-bounce" />
-                              <span>Llamar al Mozo para Pagar / Traer Cuenta</span>
+                              <span>{isStaffAuthenticated ? 'Solicitar Cobro en Caja' : 'Llamar al Mozo para Pagar / Traer Cuenta'}</span>
                             </>
                           )}
                         </button>
                       )}
 
-                      {/* Acceso Rápido con PIN para Mozo o Cajero en la mesa */}
-                      <div className="pt-2 text-center">
-                        {!showInlinePin ? (
-                          <button
-                            type="button"
-                            onClick={() => setShowInlinePin(true)}
-                            className="text-[11px] text-[#78716c] hover:text-[#a8a29e] flex items-center justify-center gap-1 mx-auto transition-colors cursor-pointer"
-                          >
-                            <Lock className="w-3 h-3" />
-                            <span>¿Eres mozo o personal del restaurante? Ingresar con PIN</span>
-                          </button>
-                        ) : (
-                          <form onSubmit={handleInlinePinSubmit} className="bg-[#1c1917] p-3 rounded-xl border border-[#3a3632] space-y-2 text-left animate-fadeIn">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-bold text-[#f5efe6] flex items-center gap-1">
-                                <KeyRound className="w-3.5 h-3.5 text-[#ff7a00]" /> PIN de Personal (Caja / Mozo)
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setShowInlinePin(false)}
-                                className="text-[11px] text-[#78716c] hover:text-white"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                            <div className="flex gap-2">
-                              <input
-                                type="password"
-                                inputMode="numeric"
-                                maxLength={4}
-                                placeholder="PIN de 4 dígitos"
-                                value={inlinePin}
-                                onChange={(e) => setInlinePin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                                className="flex-1 bg-[#292524] border border-[#3a3632] rounded-lg px-3 py-1.5 text-xs text-white font-mono tracking-widest focus:outline-none focus:border-[#ff7a00]"
-                                autoFocus
-                              />
-                              <button
-                                type="submit"
-                                disabled={isVerifyingInlinePin}
-                                className="px-3.5 py-1.5 bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-bold text-xs rounded-lg cursor-pointer disabled:opacity-50"
-                              >
-                                {isVerifyingInlinePin ? '...' : 'Acceder'}
-                              </button>
-                            </div>
-                            {pinError && (
-                              <p className="text-[10px] text-red-400 font-medium">{pinError}</p>
-                            )}
-                          </form>
-                        )}
-                      </div>
+                      {/* Acceso Rápido con PIN para Cajero/Admin en la mesa */}
+                      {!isStaffAuthenticated && (
+                        <div className="pt-2 text-center">
+                          {!showInlinePin ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowInlinePin(true)}
+                              className="text-[11px] text-[#78716c] hover:text-[#a8a29e] flex items-center justify-center gap-1 mx-auto transition-colors cursor-pointer"
+                            >
+                              <Lock className="w-3 h-3" />
+                              <span>¿Eres mozo o personal del restaurante? Ingresar con PIN</span>
+                            </button>
+                          ) : (
+                            <form onSubmit={handleInlinePinSubmit} className="bg-[#1c1917] p-3 rounded-xl border border-[#3a3632] space-y-2 text-left animate-fadeIn">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold text-[#f5efe6] flex items-center gap-1">
+                                  <KeyRound className="w-3.5 h-3.5 text-[#ff7a00]" /> PIN de Personal (Caja / Mozo)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowInlinePin(false)}
+                                  className="text-[11px] text-[#78716c] hover:text-white"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                              <div className="flex gap-2">
+                                <input
+                                  type="password"
+                                  inputMode="numeric"
+                                  maxLength={4}
+                                  placeholder="PIN de 4 dígitos"
+                                  value={inlinePin}
+                                  onChange={(e) => setInlinePin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                                  className="flex-1 bg-[#292524] border border-[#3a3632] rounded-lg px-3 py-1.5 text-xs text-white font-mono tracking-widest focus:outline-none focus:border-[#ff7a00]"
+                                  autoFocus
+                                />
+                                <button
+                                  type="submit"
+                                  disabled={isVerifyingInlinePin}
+                                  className="px-3.5 py-1.5 bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-bold text-xs rounded-lg cursor-pointer disabled:opacity-50"
+                                >
+                                  {isVerifyingInlinePin ? '...' : 'Acceder'}
+                                </button>
+                              </div>
+                              {pinError && (
+                                <p className="text-[10px] text-red-400 font-medium">{pinError}</p>
+                              )}
+                            </form>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -917,8 +1215,8 @@ Gastronomía de Altura • Tarija`;
           )}
         </div>
 
-        {/* Sticky Bottom Footer for Cart Ordering */}
-        {itemsToShow.length > 0 && modalMode === 'cart' && (
+        {/* Sticky Bottom Footer for Cart Ordering (Solo roles que toman pedidos o cliente) */}
+        {itemsToShow.length > 0 && modalMode === 'cart' && allowTakeOrders && (
           <div className="shrink-0 p-4 sm:p-5 bg-[#292524] border-t border-[#3a3632] shadow-[0_-8px_25px_rgba(0,0,0,0.5)] space-y-3 pb-[calc(1.25rem+env(safe-area-inset-bottom,0px))] sm:pb-5">
             <div className="flex items-center justify-between">
               <div>
@@ -933,9 +1231,9 @@ Gastronomía de Altura • Tarija`;
                 <span className="text-[20px] sm:text-[22px] font-black text-[#ff7a00] font-sans">
                   Bs. {totalToShow.toFixed(2)}
                 </span>
-                {isAdditionMode && activeOrder && (
+                {isAdditionMode && effectiveOrder && (
                   <span className="text-[10px] text-[#a8a29e] block">
-                    Total comanda final: Bs. {(activeOrder.total + totalToShow).toFixed(2)}
+                    Total comanda final: Bs. {(effectiveOrder.total + totalToShow).toFixed(2)}
                   </span>
                 )}
               </div>
