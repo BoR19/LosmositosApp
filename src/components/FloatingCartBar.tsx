@@ -8,6 +8,7 @@ interface FloatingCartBarProps {
   isOpen: boolean;
   onOpenCart: () => void;
   selectedTable?: Table | null;
+  visible?: boolean;
 }
 
 export const FloatingCartBar: React.FC<FloatingCartBarProps> = ({
@@ -16,15 +17,16 @@ export const FloatingCartBar: React.FC<FloatingCartBarProps> = ({
   isOpen,
   onOpenCart,
   selectedTable = null,
+  visible = true,
 }) => {
-  // If the cart modal is already open, do not show the floating bar to avoid visual overlap
-  if (isOpen) return null;
+  // Ocultar por completo si está apagado desde Admin o si el modal del carrito ya está abierto
+  if (!visible || isOpen) return null;
 
   const totalCount = cart.reduce((s, i) => s + i.qty, 0);
   const activeOrder = selectedTable?.currentOrder || null;
 
   return (
-    <div className="fixed bottom-[74px] left-3 right-3 z-[990] md:hidden pointer-events-none transition-all duration-300">
+    <div className="fixed bottom-[74px] left-3 right-3 sm:max-w-lg sm:mx-auto lg:left-auto lg:right-6 lg:bottom-6 lg:w-[380px] z-[990] pointer-events-none transition-all duration-300">
       {cart.length > 0 ? (
         <div className="pointer-events-auto">
           <button

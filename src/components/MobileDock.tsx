@@ -12,6 +12,7 @@ interface MobileDockProps {
   onOpenCart: () => void;
   onOpenWelcome?: () => void;
   isCartOpen: boolean;
+  usarPildoraFlotante?: boolean;
   isStaffAuthenticated?: boolean;
   isAdminAuthenticated?: boolean;
   canAccessTables?: boolean;
@@ -29,6 +30,7 @@ export const MobileDock: React.FC<MobileDockProps> = ({
   onOpenCart,
   onOpenWelcome,
   isCartOpen,
+  usarPildoraFlotante = true,
   isStaffAuthenticated = false,
   isAdminAuthenticated = false,
   canAccessTables = true,
@@ -44,20 +46,27 @@ export const MobileDock: React.FC<MobileDockProps> = ({
   const allTabs = [
     { id: 'welcome', label: 'Inicio', icon: Home, isAction: true, isStaff: false, allowed: true },
     { id: 'menu', label: 'Menú', icon: Utensils, isAction: false, isStaff: false, allowed: true },
-    { id: 'cart-tab', label: 'Carrito', icon: ShoppingBag, isAction: true, isStaff: false, allowed: true },
+    {
+      id: 'cart-tab',
+      label: 'Carrito',
+      icon: ShoppingBag,
+      isAction: true,
+      isStaff: false,
+      allowed: !usarPildoraFlotante,
+    },
     { id: 'tables', label: 'Mesas', icon: QrCode, isAction: false, isStaff: true, allowed: isAdminAuthenticated || canAccessTables },
     { id: 'kitchen', label: 'Cocina', icon: ChefHat, isAction: false, isStaff: true, allowed: isAdminAuthenticated || canAccessKitchen },
     { id: 'admin', label: 'Admin', icon: Layers, isAction: false, isStaff: true, allowed: isAdminAuthenticated || canAccessAdmin },
   ];
 
   const visibleTabs = isStaffAuthenticated
-    ? allTabs.filter((tab) => !tab.isStaff || tab.allowed)
-    : allTabs.filter((tab) => !tab.isStaff);
+    ? allTabs.filter((tab) => tab.allowed)
+    : allTabs.filter((tab) => !tab.isStaff && tab.allowed);
 
   return (
     <nav 
       aria-label="Barra de navegación inferior"
-      className="fixed bottom-0 left-0 right-0 z-[900] bg-[#1c1917]/95 backdrop-blur-xl border-t border-[#3a3632] flex md:hidden items-center justify-around px-3 py-2 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))]"
+      className="fixed bottom-0 left-0 right-0 z-[900] bg-[#1c1917]/95 backdrop-blur-xl border-t border-[#3a3632] flex lg:hidden items-center justify-around px-3 py-2 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))]"
     >
       <div 
         className={`w-full flex items-center transition-all duration-200 ${

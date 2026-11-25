@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Utensils, QrCode, ShoppingBag, Clock, Sparkles, AlertCircle, 
+  Utensils, QrCode, Clock, Sparkles, AlertCircle, 
   ChefHat, Layers, Award, Bell, FileText, CheckCheck, LogIn, LogOut, Lock,
   Plus, Trash2, Pencil, Search, DollarSign, Image as ImageIcon, SlidersHorizontal,
   Building2, Home, ArrowRightLeft, Users, X
@@ -241,6 +241,7 @@ export default function App() {
     colorSecundario: '#10b981',
     modoFondo: 'dark-zinc',
   });
+  const [usarPildoraFlotante, setUsarPildoraFlotante] = useState<boolean>(true);
   const [adminSubTab, setAdminSubTab] = useState<'inventario' | 'perfil' | 'historial' | 'equipo'>(() => {
     if (typeof window !== 'undefined' && window.location.pathname.toLowerCase().includes('/admin/equipo')) {
       return 'equipo';
@@ -479,6 +480,17 @@ export default function App() {
       console.warn("Perfil snapshot listener error:", error);
     });
 
+    const unsubscribeAppearance = onSnapshot(doc(db, 'configuracion', 'apariencia'), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setUsarPildoraFlotante(data.usarPildoraFlotante !== false);
+      } else {
+        setUsarPildoraFlotante(true);
+      }
+    }, (error) => {
+      console.warn("Apariencia snapshot listener error:", error);
+    });
+
     const unsubscribeRequests = isStaff ? onSnapshot(collection(db, 'solicitudes_cambio'), (snapshot) => {
       const liveReqs = snapshot.docs.map(d => ({
         id: d.id,
@@ -496,6 +508,7 @@ export default function App() {
       unsubscribeCalls();
       unsubscribeTables();
       unsubscribeProfile();
+      unsubscribeAppearance();
       unsubscribeRequests();
     };
   }, []);
@@ -2142,7 +2155,7 @@ export default function App() {
           </div>
 
           {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center p-1.5 rounded-[16px] border border-[#3a3632] bg-[#292524]">
+          <nav className="hidden lg:flex items-center p-1.5 rounded-[16px] border border-[#3a3632] bg-[#292524]">
             {[
               { id: 'menu', label: 'Menú', icon: Utensils, isStaff: false, allowed: true },
               { id: 'tables', label: 'Mesas', icon: QrCode, isStaff: true, allowed: canAccessTables },
@@ -2235,19 +2248,6 @@ export default function App() {
                 <span className="font-semibold text-[11px] sm:text-xs">Personal</span>
               </button>
             )}
-            <button
-              onClick={() => { setModalMode('cart'); setCustomerModalOpen(true); }}
-              className="relative px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-[14px] bg-[#ff7a00] hover:bg-[#ff8c1a] text-white font-bold transition-all shadow-[0_4px_20px_rgba(255,122,0,0.35)] flex items-center gap-2 active:scale-95 shrink-0 cursor-pointer"
-              aria-label="Abrir Carrito"
-            >
-              <ShoppingBag className="w-5 h-5 shrink-0" />
-              <span className="font-extrabold text-[14px]">
-                {cart.reduce((s, i) => s + i.qty, 0)}
-              </span>
-              <span className="hidden sm:inline text-xs font-semibold uppercase tracking-wider">
-                Carrito
-              </span>
-            </button>
           </div>
         </div>
       </header>
@@ -2265,7 +2265,13 @@ export default function App() {
       )}
 
       {/* Main Content */}
-      <main className={`max-w-[1280px] mx-auto px-4 sm:px-6 py-6 ${isDesktopPos ? 'pb-10' : 'pb-36 sm:pb-12'}`}>
+      <main className={`max-w-[1280px] mx-auto px-4 sm:px-6 py-6 ${
+        isDesktopPos
+          ? 'pb-10'
+          : usarPildoraFlotante
+          ? 'pb-28 lg:pb-12'
+          : 'pb-24 lg:pb-12'
+      }`}>
         {activeTab === 'menu' && (
           <div className="space-y-6 animate-fadeIn">
             {/* Cabecera POS Desktop con Buscador en Tiempo Real (oculta Hero Banner de cliente) */}
@@ -2316,23 +2322,7 @@ export default function App() {
                   Escanea el código QR de tu mesa, agrega tus platos al carrito y envíalos a cocina sin demoras.
                 </p>
                 <div className="pt-2 flex flex-wrap gap-2.5 items-center">
-                  {isClientMode ? (
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-center gap-2 border border-[#ff7a00]/40 bg-[#1c1917] rounded-xl px-3.5 py-2 text-xs font-bold text-[#ff7a00] shadow-sm">
-                        <Lock className="w-3.5 h-3.5 text-[#ff7a00]" />
-                        <span>{tables.find(t => t.id === currentTableId)?.name || `Mesa ${currentTableId}`} - Salón Central</span>
-                        <span className="text-[10px] text-[#a8a29e] font-normal" title="Mesa asignada por QR bloqueada">🔒</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsRequestChangeModalOpen(true)}
-                        className="text-[11px] text-[#a8a29e] hover:text-[#ff7a00] underline transition-colors cursor-pointer flex items-center gap-1 self-start font-medium pt-0.5"
-                      >
-                        <ArrowRightLeft className="w-3 h-3 text-[#ff7a00]" />
-                        <span>¿Cambiar de mesa?</span>
-                      </button>
-                    </div>
-                  ) : (
+                  {!isClientMode && (
                     <div className={`flex items-center gap-2 border rounded-xl px-3 py-2 transition-colors ${
                       currentTableId === null ? 'bg-amber-950/40 border-amber-500/60' : 'bg-[#1c1917] border-[#3a3632]'
                     }`}>
@@ -3398,6 +3388,7 @@ export default function App() {
                     isAdminAuthenticated={isAdminAuthenticated}
                     securityConfig={securityConfig}
                     collaborators={collaborators}
+                    usarPildoraFlotante={usarPildoraFlotante}
                     showToast={showToast}
                     onMasterPinUpdated={(newPin) => {
                       if (staffSession?.isMasterAdmin && staffSession.authType === 'pin') {
@@ -3492,6 +3483,7 @@ export default function App() {
               cartTotal={cartTotal}
               isOpen={customerModalOpen}
               selectedTable={selectedTableObject}
+              visible={usarPildoraFlotante}
               onOpenCart={() => {
                 setModalMode('cart');
                 setCustomerModalOpen(true);
@@ -3510,6 +3502,7 @@ export default function App() {
         waiterCallsCount={waiterCalls.length}
         changeRequestsCount={pendingChangeRequests.length}
         isCartOpen={customerModalOpen}
+        usarPildoraFlotante={usarPildoraFlotante}
         isStaffAuthenticated={isStaffAuthenticated}
         isAdminAuthenticated={isAdminAuthenticated}
         canAccessTables={canAccessTables}

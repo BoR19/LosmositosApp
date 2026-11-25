@@ -14,7 +14,10 @@ import {
   AlertCircle,
   Mail,
   Plus,
+  Smartphone,
 } from 'lucide-react';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../firebase.ts';
 import {
   Collaborator,
   PermissionKey,
@@ -38,6 +41,7 @@ interface EquipoYPermisosProps {
   isAdminAuthenticated: boolean;
   securityConfig: SecurityConfig;
   collaborators: Collaborator[];
+  usarPildoraFlotante: boolean;
   showToast: (msg: string, type?: 'success' | 'error' | 'info') => void;
   onMasterPinUpdated?: (newPin: string) => void;
 }
@@ -48,6 +52,7 @@ export const EquipoYPermisos: React.FC<EquipoYPermisosProps> = ({
   isAdminAuthenticated,
   securityConfig,
   collaborators,
+  usarPildoraFlotante,
   showToast,
   onMasterPinUpdated,
 }) => {
@@ -60,6 +65,9 @@ export const EquipoYPermisos: React.FC<EquipoYPermisosProps> = ({
   const [showGoogleAdmins, setShowGoogleAdmins] = useState(false);
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [isSavingEmails, setIsSavingEmails] = useState(false);
+
+  // Floating pill toggle saving state
+  const [isSavingAppearance, setIsSavingAppearance] = useState(false);
 
   // Form state (Create / Edit Collaborator)
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -181,6 +189,32 @@ export const EquipoYPermisos: React.FC<EquipoYPermisosProps> = ({
       showToast(err?.message || 'Error al remover correo.', 'error');
     } finally {
       setIsSavingEmails(false);
+    }
+  };
+
+  const handleToggleFloatingPill = async () => {
+    if (!isAdminAuthenticated || isSavingAppearance) return;
+    const nextValue = !usarPildoraFlotante;
+    setIsSavingAppearance(true);
+    try {
+      await setDoc(
+        doc(db, 'configuracion', 'apariencia'),
+        {
+          usarPildoraFlotante: nextValue,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      showToast(
+        nextValue
+          ? 'Modo Píldora Flotante activado en móviles y tablets.'
+          : 'Modo Barra Inferior Clásica activado en móviles y tablets.'
+      );
+    } catch (err: any) {
+      console.error('Error actualizando configuracion/apariencia:', err);
+      showToast(err?.message || 'No se pudo guardar la preferencia visual.', 'error');
+    } finally {
+      setIsSavingAppearance(false);
     }
   };
 
@@ -422,6 +456,54 @@ export const EquipoYPermisos: React.FC<EquipoYPermisosProps> = ({
             )}
           </div>
         )}
+      </div>
+
+      {/* Interruptor en Tiempo Real: Píldora Flotante vs Barra Inferior Clásica (Solo Admin) */}
+      <div className="bg-[#292524] border border-[#3a3632] rounded-[20px] p-4 sm:p-5 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[#ff7a00]/15 border border-[#ff7a00]/30 text-[#ff7a00] flex items-center justify-center shrink-0">
+            <Smartphone className="w-5 h-5" />
+          </div>
+          <div className="space-y-0.5">
+            <h4 className="text-sm sm:text-base font-bold text-[#f5efe6]">
+              Píldora Flotante de Carrito (Móvil / Tablet)
+            </h4>
+            <p className="text-xs text-[#a8a29e] leading-relaxed">
+              {usarPildoraFlotante
+                ? 'Muestra la barra flotante con la mesa y total en Bs. (oculta el ícono en la barra inferior)'
+                : 'Usa el ícono de Carrito fijo en la barra de navegación inferior'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 self-end sm:self-center shrink-0">
+          <span
+            className={`text-xs font-bold ${
+              usarPildoraFlotante ? 'text-[#ff7a00]' : 'text-[#a8a29e]'
+            }`}
+          >
+            {usarPildoraFlotante ? 'Activo' : 'Apagado'}
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={usarPildoraFlotante}
+            aria-label="Píldora Flotante de Carrito (Móvil / Tablet)"
+            disabled={isSavingAppearance}
+            onClick={handleToggleFloatingPill}
+            className={`relative inline-flex h-7 w-13 shrink-0 items-center rounded-full border transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-[#ff7a00]/50 cursor-pointer disabled:opacity-60 ${
+              usarPildoraFlotante
+                ? 'bg-[#ff7a00] border-[#ff8c1a] shadow-[0_0_16px_rgba(255,122,0,0.4)]'
+                : 'bg-[#1c1917] border-[#3a3632]'
+            }`}
+          >
+            <span
+              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-200 ${
+                usarPildoraFlotante ? 'translate-x-7' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
       </div>
 
       {/* Grid Principal de 2 Columnas */}

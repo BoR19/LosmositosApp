@@ -83,6 +83,15 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /configuracion/apariencia {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if incoming().keys().hasAll(['usarPildoraFlotante'])
+        && incoming().keys().hasOnly(['usarPildoraFlotante', 'updatedAt'])
+        && incoming().usarPildoraFlotante is bool;
+      allow delete: if false;
+    }
+
     match /colaboradores/{colaboradorId} {
       allow list: if true;
       allow get: if isValidId(colaboradorId);
