@@ -1,5 +1,5 @@
 import React from 'react';
-import { QrCode, Printer, X } from 'lucide-react';
+import { Printer, X } from 'lucide-react';
 import { Table } from '../types/index.ts';
 
 interface QrModalProps {

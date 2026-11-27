@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  FileText, Search, Calendar, DollarSign, Smartphone, Printer, 
-  MessageSquare, QrCode, ArrowDownRight, RefreshCw, CheckCircle2,
-  Filter, Award, Hash, Table as TableIcon
+  FileText, Search, Calendar, DollarSign, Smartphone, 
+  MessageSquare, QrCode, RefreshCw,
+  Hash, Table as TableIcon
 } from 'lucide-react';
 import { collection, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase.ts';

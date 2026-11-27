@@ -3,7 +3,6 @@ import {
   Building2, 
   Upload, 
   Image as ImageIcon, 
-  Palette, 
   Phone, 
   Check, 
   Loader2, 

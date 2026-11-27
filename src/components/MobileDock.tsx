@@ -1,5 +1,5 @@
 import React from 'react';
-import { Utensils, ShoppingBag, QrCode, ChefHat, Layers, Lock, Home } from 'lucide-react';
+import { Utensils, ShoppingBag, QrCode, ChefHat, Layers, Home } from 'lucide-react';
 import { Order, CartItem } from '../types/index.ts';
 
 interface MobileDockProps {

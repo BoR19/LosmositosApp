@@ -1,6 +1,7 @@
 import React from 'react';
 import { ShoppingBag, ChevronRight, MapPin } from 'lucide-react';
-import { CartItem, Table } from '../types/index.ts';
+import { CartItem, Order, Table } from '../types/index.ts';
+import { countItemsQty, formatCurrencyBs } from '../utils/formatters.ts';
 
 interface FloatingCartBarProps {
   cart: CartItem[];
@@ -8,6 +9,8 @@ interface FloatingCartBarProps {
   isOpen: boolean;
   onOpenCart: () => void;
   selectedTable?: Table | null;
+  takeAwayOrder?: Order | null;
+  isTakeAwaySelected?: boolean;
   visible?: boolean;
 }
 
@@ -17,13 +20,22 @@ export const FloatingCartBar: React.FC<FloatingCartBarProps> = ({
   isOpen,
   onOpenCart,
   selectedTable = null,
+  takeAwayOrder = null,
+  isTakeAwaySelected = false,
   visible = true,
 }) => {
   // Ocultar por completo si está apagado desde Admin o si el modal del carrito ya está abierto
   if (!visible || isOpen) return null;
 
-  const totalCount = cart.reduce((s, i) => s + i.qty, 0);
-  const activeOrder = selectedTable?.currentOrder || null;
+  const totalCount = countItemsQty(cart);
+  const activeOrder = takeAwayOrder || selectedTable?.currentOrder || null;
+  const contextLabel = takeAwayOrder
+    ? `🛍️ Para Llevar ${takeAwayOrder.codigoCorrelativo || '#LL-01'}`
+    : isTakeAwaySelected
+      ? '🛍️ Para Llevar'
+      : selectedTable
+        ? selectedTable.name
+        : 'Carrito';
 
   return (
     <div className="fixed bottom-[74px] left-3 right-3 sm:max-w-lg sm:mx-auto lg:left-auto lg:right-6 lg:bottom-6 lg:w-[380px] z-[990] pointer-events-none transition-all duration-300">
@@ -43,12 +55,12 @@ export const FloatingCartBar: React.FC<FloatingCartBarProps> = ({
               <div className="text-left min-w-0">
                 <p className="text-[11px] text-white/95 font-medium leading-tight truncate flex items-center gap-1">
                   <span>{totalCount} {totalCount === 1 ? 'plato listo' : 'platos listos'}</span>
-                  {selectedTable && (
-                    <span className="font-bold">• {selectedTable.name}</span>
+                  {(selectedTable || takeAwayOrder || isTakeAwaySelected) && (
+                    <span className="font-bold">• {contextLabel}</span>
                   )}
                 </p>
                 <p className="text-[17px] font-black tracking-tight leading-tight">
-                  Bs. {cartTotal.toFixed(2)}
+                  {formatCurrencyBs(cartTotal)}
                 </p>
               </div>
             </div>
@@ -69,12 +81,12 @@ export const FloatingCartBar: React.FC<FloatingCartBarProps> = ({
             </div>
             <div className="text-left min-w-0">
               <span className="text-xs font-bold text-[#f5efe6] block leading-tight truncate">
-                {selectedTable ? selectedTable.name : 'Carrito'}
+                {contextLabel}
               </span>
               {activeOrder && (
                 <span className="text-[10px] font-bold text-[#ff7a00] flex items-center gap-1 leading-tight">
                   <MapPin className="w-2.5 h-2.5 shrink-0" />
-                  Comanda: Bs. {activeOrder.total.toFixed(2)}
+                  Comanda: {formatCurrencyBs(activeOrder.total)}
                 </span>
               )}
             </div>

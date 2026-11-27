@@ -4,6 +4,8 @@ import {
   CheckCircle2,
   Flame,
   MessageCircle,
+  ShoppingBag,
+  ArrowRight,
 } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase.ts';
@@ -13,13 +15,16 @@ import {
   clearClientSessionStorage,
   isTableDataFree,
 } from '../services/tableSessionService.ts';
+import { isValidBoliviaPhone, sanitizeBoliviaPhone } from '../utils/formatters.ts';
 
 interface WelcomeScreenProps {
-  mesaNumber: number;
+  mesaNumber: number | null;
   tableName?: string;
   tableSeats?: number;
   restaurantProfile: RestaurantProfile;
   onComplete: (celular?: string, sesionActivaId?: string) => void;
+  onSelectTakeAway: () => void;
+  onExploreMenu?: () => void;
   onSessionInvalidated?: () => void;
 }
 
@@ -29,16 +34,23 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   tableSeats = 4,
   restaurantProfile,
   onComplete,
+  onSelectTakeAway,
+  onExploreMenu,
   onSessionInvalidated,
 }) => {
   // Inicia vacío por defecto para evitar mostrar teléfonos de comensales anteriores
   const [celular, setCelular] = useState<string>('');
-  const [isCheckingSession, setIsCheckingSession] = useState<boolean>(true);
+  const [isCheckingSession, setIsCheckingSession] = useState<boolean>(mesaNumber !== null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
-  // Validar sesionActivaId de la mesa en Firestore y limpiar rastros viejos si fue liberada
+  // Validar sesionActivaId de la mesa en Firestore cuando hay mesaNumber (?mesa=X)
   useEffect(() => {
+    if (mesaNumber === null) {
+      setIsCheckingSession(false);
+      return;
+    }
+
     let active = true;
 
     const validateTableSession = async () => {
@@ -65,9 +77,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
         );
 
         if (isOpenedFromCaja && cajaSessionId) {
-          const cajaPhone = String(activaData?.cliente_celular || '')
-            .replace(/\D/g, '')
-            .slice(0, 8);
+          const cajaPhone = sanitizeBoliviaPhone(String(activaData?.cliente_celular || ''));
           const nowIso = new Date().toISOString();
           try {
             localStorage.setItem('churo_mesa', String(mesaNumber));
@@ -109,7 +119,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
         if (isSameActiveSession) {
           const currentPhone =
             (typeof localStorage !== 'undefined' ? localStorage.getItem('churo_celular') : '') || '';
-          setCelular(currentPhone.replace(/\D/g, '').slice(0, 8));
+          setCelular(sanitizeBoliviaPhone(currentPhone));
         } else {
           // Mesa libre o sesionActivaId distinta: limpiar teléfono, carrito y sesión vieja
           clearClientSessionStorage(mesaNumber);
@@ -138,23 +148,22 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
     };
   }, [mesaNumber]);
 
-  const BOLIVIA_PHONE_REGEX = /^[67]\d{7}$/;
-  const cleanCelular = celular.replace(/\D/g, '').slice(0, 8);
-  const isValidNumber = BOLIVIA_PHONE_REGEX.test(cleanCelular);
+  const cleanCelular = sanitizeBoliviaPhone(celular);
+  const isValidNumber = isValidBoliviaPhone(cleanCelular);
   const hasStartedTyping = cleanCelular.length > 0;
   const INVALID_PHONE_MSG =
     'Ingresa un número de celular válido de Bolivia (8 dígitos empezando con 6 o 7)';
 
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value.replace(/\D/g, '').slice(0, 8);
-    setCelular(val);
+    setCelular(sanitizeBoliviaPhone(e.target.value));
     setErrorMsg('');
   };
 
   const handleContinueWithPhone = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (mesaNumber === null) return;
 
-    if (!BOLIVIA_PHONE_REGEX.test(cleanCelular)) {
+    if (!isValidNumber) {
       setErrorMsg(INVALID_PHONE_MSG);
       return;
     }
@@ -177,6 +186,10 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   };
 
   const handleSkip = async () => {
+    if (mesaNumber === null) {
+      onComplete();
+      return;
+    }
     setIsSubmitting(true);
     try {
       const sesionId = await activarSesionMesa({
@@ -238,93 +251,151 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
           </p>
         </div>
 
-        {/* 2. MESA BADGE */}
-        <div className="px-5 py-1.5 rounded-full bg-[#1c1510] border border-[#ff7a00]/50 text-[#f5efe6] text-xs font-mono font-extrabold shadow-md inline-flex items-center gap-1.5">
-          <span>{tableName || `Mesa ${mesaNumber}`}</span>
-        </div>
-
-        {/* 3. HEADINGS & DESCRIPTION */}
-        <div className="space-y-2 max-w-xs">
-          <h2 className="text-3xl sm:text-4xl font-serif font-black tracking-tight text-[#f5efe6]">
-            Bienvenido
-          </h2>
-          <h3 className="text-xl sm:text-2xl font-bold text-[#f5efe6] leading-tight">
-            ¿A dónde te enviamos <br /> tu cuenta?
-          </h3>
-          <p className="text-xs text-[#a8a29e] pt-1 leading-relaxed flex items-center justify-center gap-1 flex-wrap">
-            <span>Recibirás tu recibo al instante por</span>
-            <span className="text-emerald-400 font-semibold flex items-center gap-0.5">
-              <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
-            </span>
-            <span>al finalizar tu pedido.</span>
-          </p>
-        </div>
-
-        {/* 4. FORM / INPUT & ACTIONS */}
-        <form onSubmit={handleContinueWithPhone} className="w-full space-y-4 pt-1">
-          <div className="relative flex items-center rounded-2xl bg-[#1c1612] border-2 border-[#ff7a00]/60 focus-within:border-[#FF7A00] focus-within:ring-2 focus-within:ring-[#FF7A00]/30 transition-all p-2 shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
-            <div className="flex items-center gap-2 px-3 py-2 text-sm font-bold font-mono text-[#f5efe6] border-r border-[#3a2c22] shrink-0">
-              <span className="text-lg">🇧🇴</span>
-              <span>+591</span>
+        {/* MODO SIN QR DE MESA: Entrada directa Para Llevar / Explorar Menú */}
+        {mesaNumber === null ? (
+          <div className="w-full space-y-5">
+            <div className="space-y-2 max-w-xs mx-auto">
+              <div className="px-4 py-1.5 rounded-full bg-[#1c1510] border border-[#ff7a00]/50 text-[#ff7a00] text-xs font-bold inline-flex items-center gap-1.5">
+                <ShoppingBag className="w-3.5 h-3.5" />
+                <span>Retiro en Local • Tarija</span>
+              </div>
+              <h2 className="text-3xl font-serif font-black tracking-tight text-[#f5efe6]">
+                Bienvenido
+              </h2>
+              <p className="text-xs text-[#a8a29e] leading-relaxed">
+                Realiza tu pedido <strong className="text-[#f5efe6]">Para Llevar</strong> y recógelo directo en mostrador con tu código de 4 dígitos, o explora nuestra carta.
+              </p>
             </div>
 
-            <input
-              type="tel"
-              inputMode="numeric"
-              value={cleanCelular}
-              onChange={handlePhoneChange}
-              placeholder={isCheckingSession ? 'Verificando mesa...' : '7245XXXX'}
-              disabled={isCheckingSession || isSubmitting}
-              maxLength={8}
-              autoComplete="off"
-              className="w-full bg-transparent px-3 py-2 text-base font-mono font-extrabold text-[#f5efe6] placeholder-[#52453d] focus:outline-none tracking-widest text-left"
-              autoFocus
-            />
+            <div className="space-y-3 pt-1">
+              <button
+                type="button"
+                onClick={onSelectTakeAway}
+                className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-[#ff7a00] via-[#ff8c1a] to-[#ff6a00] text-white font-black text-sm sm:text-base shadow-[0_8px_30px_rgba(255,122,0,0.55)] border border-[#ffa34d]/50 hover:brightness-110 active:scale-98 transition-all flex items-center justify-center gap-2.5 cursor-pointer"
+              >
+                <span className="text-lg">🛍️</span>
+                <span>Pedir Para Llevar (Retiro en local)</span>
+              </button>
 
-            {isValidNumber && (
-              <div className="pr-3 text-emerald-400 shrink-0 animate-fadeIn">
-                <CheckCircle2 className="w-6 h-6" />
-              </div>
-            )}
+              {onExploreMenu && (
+                <button
+                  type="button"
+                  onClick={onExploreMenu}
+                  className="w-full py-3 px-4 rounded-2xl bg-[#1c1612] hover:bg-[#292524] border border-[#3a3632] text-[#d6d3d1] hover:text-white text-xs font-bold transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span>Solo explorar el menú</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#ff7a00]" />
+                </button>
+              )}
+            </div>
+
+            <p className="text-[10px] text-[#786e68] leading-tight max-w-xs mx-auto pt-1">
+              Si estás sentado en el salón, escanea el código QR ubicado en tu mesa.
+            </p>
           </div>
+        ) : (
+          <>
+            {/* 2. MESA BADGE */}
+            <div className="px-5 py-1.5 rounded-full bg-[#1c1510] border border-[#ff7a00]/50 text-[#f5efe6] text-xs font-mono font-extrabold shadow-md inline-flex items-center gap-1.5">
+              <span>{tableName || `Mesa ${mesaNumber}`}</span>
+            </div>
 
-          {hasStartedTyping && !isValidNumber && (
-            <p className="text-[11px] text-amber-400 font-medium px-1 text-center">
-              {INVALID_PHONE_MSG}
+            {/* 3. HEADINGS & DESCRIPTION */}
+            <div className="space-y-2 max-w-xs">
+              <h2 className="text-3xl sm:text-4xl font-serif font-black tracking-tight text-[#f5efe6]">
+                Bienvenido
+              </h2>
+              <h3 className="text-xl sm:text-2xl font-bold text-[#f5efe6] leading-tight">
+                ¿A dónde te enviamos <br /> tu cuenta?
+              </h3>
+              <p className="text-xs text-[#a8a29e] pt-1 leading-relaxed flex items-center justify-center gap-1 flex-wrap">
+                <span>Recibirás tu recibo al instante por</span>
+                <span className="text-emerald-400 font-semibold flex items-center gap-0.5">
+                  <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
+                </span>
+                <span>al finalizar tu pedido.</span>
+              </p>
+            </div>
+
+            {/* 4. FORM / INPUT & ACTIONS */}
+            <form onSubmit={handleContinueWithPhone} className="w-full space-y-4 pt-1">
+              <div className="relative flex items-center rounded-2xl bg-[#1c1612] border-2 border-[#ff7a00]/60 focus-within:border-[#FF7A00] focus-within:ring-2 focus-within:ring-[#FF7A00]/30 transition-all p-2 shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
+                <div className="flex items-center gap-2 px-3 py-2 text-sm font-bold font-mono text-[#f5efe6] border-r border-[#3a2c22] shrink-0">
+                  <span className="text-lg">🇧🇴</span>
+                  <span>+591</span>
+                </div>
+
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  value={cleanCelular}
+                  onChange={handlePhoneChange}
+                  placeholder={isCheckingSession ? 'Verificando mesa...' : '7245XXXX'}
+                  disabled={isCheckingSession || isSubmitting}
+                  maxLength={8}
+                  autoComplete="off"
+                  className="w-full bg-transparent px-3 py-2 text-base font-mono font-extrabold text-[#f5efe6] placeholder-[#52453d] focus:outline-none tracking-widest text-left"
+                  autoFocus
+                />
+
+                {isValidNumber && (
+                  <div className="pr-3 text-emerald-400 shrink-0 animate-fadeIn">
+                    <CheckCircle2 className="w-6 h-6" />
+                  </div>
+                )}
+              </div>
+
+              {hasStartedTyping && !isValidNumber && (
+                <p className="text-[11px] text-amber-400 font-medium px-1 text-center">
+                  {INVALID_PHONE_MSG}
+                </p>
+              )}
+
+              {errorMsg && (
+                <p className="text-xs text-red-400 font-medium px-1 text-center">
+                  {errorMsg}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={isCheckingSession || isSubmitting || (hasStartedTyping && !isValidNumber)}
+                className={`w-full py-4 px-6 rounded-2xl font-black text-base transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xl active:scale-98 ${
+                  !isCheckingSession && (isValidNumber || !hasStartedTyping)
+                    ? 'bg-gradient-to-r from-[#ff7a00] via-[#ff8c1a] to-[#ff6a00] text-white shadow-[0_8px_30px_rgba(255,122,0,0.55)] border border-[#ffa34d]/50 hover:brightness-110'
+                    : 'bg-[#291f19] text-[#786356] cursor-not-allowed border border-[#3d2e24]'
+                }`}
+              >
+                {isSubmitting ? <span>Cargando Menú...</span> : <span>Ver Menú</span>}
+              </button>
+            </form>
+
+            <div className="flex flex-col items-center gap-2.5 w-full">
+              <button
+                type="button"
+                disabled={isCheckingSession || isSubmitting}
+                onClick={handleSkip}
+                className="text-xs sm:text-sm font-semibold text-[#a8a29e] hover:text-[#f5efe6] underline underline-offset-4 transition-colors cursor-pointer py-1 disabled:opacity-50"
+              >
+                Continuar sin número
+              </button>
+
+              <button
+                type="button"
+                disabled={isCheckingSession || isSubmitting}
+                onClick={onSelectTakeAway}
+                className="w-full py-3 px-4 rounded-xl bg-[#1c1612] hover:bg-[#292524] border border-[#3a3632] hover:border-[#ff7a00]/50 text-xs font-bold text-[#f5efe6] transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                <span>🛍️</span>
+                <span>Pedir Para Llevar (Retiro en local)</span>
+              </button>
+            </div>
+
+            <p className="text-[10px] text-[#786e68] leading-tight max-w-xs pt-1">
+              Usamos tu número solo para enviar el recibo por WhatsApp. Puedes cambiarlo luego.
             </p>
-          )}
-
-          {errorMsg && (
-            <p className="text-xs text-red-400 font-medium px-1 text-center">
-              {errorMsg}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={isCheckingSession || isSubmitting || (hasStartedTyping && !isValidNumber)}
-            className={`w-full py-4 px-6 rounded-2xl font-black text-base transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xl active:scale-98 ${
-              !isCheckingSession && (isValidNumber || !hasStartedTyping)
-                ? 'bg-gradient-to-r from-[#ff7a00] via-[#ff8c1a] to-[#ff6a00] text-white shadow-[0_8px_30px_rgba(255,122,0,0.55)] border border-[#ffa34d]/50 hover:brightness-110'
-                : 'bg-[#291f19] text-[#786356] cursor-not-allowed border border-[#3d2e24]'
-            }`}
-          >
-            {isSubmitting ? <span>Cargando Menú...</span> : <span>Ver Menú</span>}
-          </button>
-        </form>
-
-        <button
-          type="button"
-          disabled={isCheckingSession || isSubmitting}
-          onClick={handleSkip}
-          className="text-xs sm:text-sm font-semibold text-[#a8a29e] hover:text-[#f5efe6] underline underline-offset-4 transition-colors cursor-pointer py-1 disabled:opacity-50"
-        >
-          Continuar sin número
-        </button>
-
-        <p className="text-[10px] text-[#786e68] leading-tight max-w-xs pt-2">
-          Usamos tu número solo para enviar el recibo por WhatsApp. Puedes cambiarlo luego.
-        </p>
+          </>
+        )}
       </div>
     </div>
   );

@@ -55,6 +55,16 @@ export interface Order {
   additionTime?: string;
   paidAt?: string;
   paymentMethod?: 'QR' | 'EFECTIVO';
+  // Campos Para Llevar (Take Away)
+  tipoPedido?: 'mesa' | 'llevar';
+  codigoCorrelativo?: string;
+  clienteNombre?: string;
+  clienteTelefono?: string | null;
+  notaRetiro?: string;
+  codigoEntrega?: string;
+  estadoCocina?: 'preparando' | 'listo' | 'entregado';
+  pagado?: boolean;
+  deliveredAt?: string;
 }
 
 export interface WaiterCall {

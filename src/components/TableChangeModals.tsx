@@ -3,11 +3,8 @@ import {
   ArrowRightLeft, 
   X, 
   Send, 
-  Clock, 
-  Phone, 
   AlertCircle, 
   CheckCircle2, 
-  HelpCircle,
   Check,
   AlertTriangle
 } from 'lucide-react';
@@ -22,6 +19,7 @@ interface RequestTableChangeModalProps {
   mesaOrigen: number;
   initialCelular?: string;
   onSubmit: (motivo: string, celular?: string) => Promise<void>;
+  onSwitchToTakeAway?: () => void;
 }
 
 export const RequestTableChangeModal: React.FC<RequestTableChangeModalProps> = ({
@@ -29,7 +27,8 @@ export const RequestTableChangeModal: React.FC<RequestTableChangeModalProps> = (
   onClose,
   mesaOrigen,
   initialCelular = '',
-  onSubmit
+  onSubmit,
+  onSwitchToTakeAway
 }) => {
   const [motivo, setMotivo] = useState('');
   const [celular, setCelular] = useState(initialCelular);
@@ -130,6 +129,22 @@ export const RequestTableChangeModal: React.FC<RequestTableChangeModalProps> = (
               )}
             </button>
           </div>
+
+          {onSwitchToTakeAway && (
+            <div className="pt-2 border-t border-[#3a3632]">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onSwitchToTakeAway();
+                }}
+                className="w-full py-2.5 px-3 rounded-xl bg-[#292524] hover:bg-[#3a3632] border border-[#ff7a00]/40 text-xs font-bold text-[#ff7a00] flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <span>🛍️</span>
+                <span>Pedir Para Llevar (Retiro en local)</span>
+              </button>
+            </div>
+          )}
         </form>
       </div>
     </div>

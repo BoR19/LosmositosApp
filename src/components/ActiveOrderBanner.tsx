@@ -1,16 +1,12 @@
 import React, { useState } from 'react';
 import { 
   Clock, 
-  ChefHat, 
-  UtensilsCrossed, 
   FileText, 
   Plus, 
   ChevronDown, 
   ChevronUp, 
   AlertCircle, 
-  Trash2,
-  Sparkles,
-  CheckCircle2
+  Trash2
 } from 'lucide-react';
 import { Order } from '../types/index.ts';
 
